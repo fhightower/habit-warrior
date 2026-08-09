@@ -1,0 +1,354 @@
+// Package render turns habits into the three reports: list, calendar, stats.
+package render
+
+import (
+	"fmt"
+	"io"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/fhightower/habit-warrior/internal/hdate"
+	"github.com/fhightower/habit-warrior/internal/model"
+)
+
+// Glyphs is the density ramp used by the calendar, from none to full.
+var Glyphs = [5]string{"·", "░", "▒", "▓", "█"}
+
+const (
+	reset  = "\033[0m"
+	dim    = "\033[2m"
+	bold   = "\033[1m"
+	yellow = "\033[33m"
+)
+
+// levelColors shades the density ramp from faint to full green.
+var levelColors = [5]string{"\033[38;5;238m", "\033[38;5;22m", "\033[38;5;28m", "\033[38;5;34m", "\033[38;5;40m"}
+
+func paint(s, code string, on bool) string {
+	if !on || code == "" {
+		return s
+	}
+	return code + s + reset
+}
+
+// width counts display columns, which for our glyphs equals rune count.
+func width(s string) int { return utf8.RuneCountInString(s) }
+
+// pad right-aligns or left-aligns s in n columns, measuring the uncolored text.
+func pad(s string, n int, right bool) string {
+	gap := n - width(s)
+	if gap <= 0 {
+		return s
+	}
+	if right {
+		return strings.Repeat(" ", gap) + s
+	}
+	return s + strings.Repeat(" ", gap)
+}
+
+// ListRow is one line of the list report, and its JSON shape.
+type ListRow struct {
+	ID        int      `json:"id"`
+	Name      string   `json:"name"`
+	Tags      []string `json:"tags"`
+	DoneToday bool     `json:"done_today"`
+	Streak    int      `json:"streak"`
+	AtRisk    bool     `json:"at_risk"`
+	Last30    int      `json:"last_30"`
+	Archived  bool     `json:"archived"`
+}
+
+// BuildRows derives the list report from habits.
+func BuildRows(habits []*model.Habit, today hdate.Date) []ListRow {
+	rows := make([]ListRow, 0, len(habits))
+	for _, h := range habits {
+		streak, atRisk := h.CurrentStreak(today)
+		tags := h.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		rows = append(rows, ListRow{
+			ID:        h.ID,
+			Name:      h.Name,
+			Tags:      tags,
+			DoneToday: h.IsDone(today),
+			Streak:    streak,
+			AtRisk:    atRisk,
+			Last30:    h.CountLast(today, 30),
+			Archived:  h.Archived,
+		})
+	}
+	return rows
+}
+
+// List writes the habit table.
+func List(w io.Writer, rows []ListRow, color bool) {
+	if len(rows) == 0 {
+		fmt.Fprintln(w, "No habits. Add one with: hw add <name>")
+		return
+	}
+
+	headers := []string{"ID", "Habit", "Tags", "Today", "Streak", "Last 30"}
+	cells := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		name := r.Name
+		if r.Archived {
+			name += " (archived)"
+		}
+		mark := Glyphs[0]
+		if r.DoneToday {
+			mark = "✓"
+		}
+		streak := fmt.Sprintf("%d", r.Streak)
+		if r.AtRisk && r.Streak > 0 {
+			streak += "!"
+		}
+		cells = append(cells, []string{
+			fmt.Sprintf("%d", r.ID),
+			name,
+			strings.Join(r.Tags, ","),
+			mark,
+			streak,
+			fmt.Sprintf("%d/30", r.Last30),
+		})
+	}
+
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = width(h)
+	}
+	for _, row := range cells {
+		for i, c := range row {
+			if width(c) > widths[i] {
+				widths[i] = width(c)
+			}
+		}
+	}
+	rightAlign := []bool{true, false, false, false, true, true}
+
+	var head []string
+	for i, h := range headers {
+		head = append(head, pad(h, widths[i], rightAlign[i]))
+	}
+	fmt.Fprintln(w, paint(strings.TrimRight(" "+strings.Join(head, "  "), " "), bold, color))
+
+	for i, row := range cells {
+		out := make([]string, len(row))
+		for j, c := range row {
+			padded := pad(c, widths[j], rightAlign[j])
+			switch {
+			case j == 3 && rows[i].DoneToday:
+				padded = paint(padded, levelColors[4], color)
+			case j == 3:
+				padded = paint(padded, dim, color)
+			case j == 2:
+				padded = paint(padded, dim, color)
+			case j == 4 && rows[i].AtRisk && rows[i].Streak > 0:
+				padded = paint(padded, yellow, color)
+			}
+			out[j] = padded
+		}
+		fmt.Fprintln(w, strings.TrimRight(" "+strings.Join(out, "  "), " "))
+	}
+
+	if color {
+		fmt.Fprintln(w, paint("  ! streak survives only if done today", dim, color))
+	}
+}
+
+// CalDay is one cell of the calendar: how many of the selected habits were
+// done that day.
+type CalDay struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
+// Calendar is the heatmap data: every day from Start (a Sunday) through End
+// (today), plus the number of habits it covers.
+type Calendar struct {
+	Start  string   `json:"start"`
+	End    string   `json:"end"`
+	Habits int      `json:"habits"`
+	Days   []CalDay `json:"days"`
+
+	start hdate.Date
+	end   hdate.Date
+}
+
+// BuildCal collects completions for the last weeks weeks, ending today. The
+// range starts on the Sunday that begins the earliest week shown, so the grid
+// has whole columns.
+func BuildCal(habits []*model.Habit, today hdate.Date, weeks int) Calendar {
+	if weeks < 1 {
+		weeks = 1
+	}
+	// Walk back to the Sunday of the current week, then back weeks-1 more.
+	sundayThisWeek := today.Add(-int(today.Weekday()))
+	start := sundayThisWeek.Add(-7 * (weeks - 1))
+
+	cal := Calendar{
+		Start:  start.String(),
+		End:    today.String(),
+		Habits: len(habits),
+		Days:   []CalDay{},
+		start:  start,
+		end:    today,
+	}
+	for d := start; !d.After(today); d = d.Add(1) {
+		n := 0
+		for _, h := range habits {
+			if h.IsDone(d) {
+				n++
+			}
+		}
+		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n})
+	}
+	return cal
+}
+
+// level maps a day's count onto the density ramp.
+func level(count, total int) int {
+	if count <= 0 {
+		return 0
+	}
+	if total <= 1 {
+		return 4
+	}
+	switch {
+	case count >= total:
+		return 4
+	case count*3 >= total*2:
+		return 3
+	case count*3 >= total:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// Cal writes the heatmap grid.
+func Cal(w io.Writer, cal Calendar, title string, color bool) {
+	start, end := cal.start, cal.end
+	if start.IsZero() {
+		if d, err := hdate.ParseISO(cal.Start); err == nil {
+			start = d
+		}
+	}
+	if end.IsZero() {
+		if d, err := hdate.ParseISO(cal.End); err == nil {
+			end = d
+		}
+	}
+
+	counts := make(map[string]int, len(cal.Days))
+	for _, d := range cal.Days {
+		counts[d.Date] = d.Count
+	}
+
+	if title != "" {
+		fmt.Fprintln(w, paint(title, bold, color))
+	}
+
+	cols := end.Since(start)/7 + 1
+	const labelWidth = 4
+
+	// Month labels sit above the first column of each new month.
+	months := make([]string, cols)
+	prev := ""
+	for c := 0; c < cols; c++ {
+		colStart := start.Add(c * 7)
+		m := colStart.Add(6).Month().String()[:3] // the week's midpoint month
+		if m != prev {
+			months[c] = m
+			prev = m
+		}
+	}
+	// Each label sits above the column its month starts in. A label is dropped
+	// only when the previous one has not finished printing, which happens when
+	// two months start within a column of each other.
+	var head strings.Builder
+	head.WriteString(strings.Repeat(" ", labelWidth))
+	pos := 0
+	for c := 0; c < cols; c++ {
+		want := c * 2 // two characters per week column
+		if months[c] == "" || pos > want {
+			continue
+		}
+		head.WriteString(strings.Repeat(" ", want-pos))
+		head.WriteString(months[c])
+		pos = want + width(months[c])
+	}
+	fmt.Fprintln(w, paint(strings.TrimRight(head.String(), " "), dim, color))
+
+	weekdayNames := [7]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	for row := 0; row < 7; row++ {
+		var line strings.Builder
+		line.WriteString(paint(pad(weekdayNames[row], labelWidth, false), dim, color))
+		for c := 0; c < cols; c++ {
+			d := start.Add(c*7 + row)
+			if d.After(end) || d.Before(start) {
+				line.WriteString("  ")
+				continue
+			}
+			lv := level(counts[d.String()], cal.Habits)
+			line.WriteString(paint(Glyphs[lv], levelColors[lv], color))
+			line.WriteString(" ")
+		}
+		fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
+	}
+
+	var legend strings.Builder
+	legend.WriteString("Less ")
+	for i, g := range Glyphs {
+		legend.WriteString(paint(g, levelColors[i], color))
+		legend.WriteString(" ")
+	}
+	legend.WriteString("More")
+	fmt.Fprintln(w, paint(legend.String(), dim, color))
+}
+
+// Stats writes the per-habit summary.
+func Stats(w io.Writer, s model.Stats, color bool) {
+	title := fmt.Sprintf("%s (#%d)", s.Name, s.ID)
+	if len(s.Tags) > 0 {
+		title += "  +" + strings.Join(s.Tags, " +")
+	}
+	fmt.Fprintln(w, paint(title, bold, color))
+
+	streak := fmt.Sprintf("%d days", s.Current)
+	if s.AtRisk && s.Current > 0 {
+		streak = paint(streak+" (not done today)", yellow, color)
+	}
+	todayMark := paint("no", dim, color)
+	if s.DoneToday {
+		todayMark = paint("yes", levelColors[4], color)
+	}
+
+	rows := [][2]string{
+		{"Today", todayMark},
+		{"Current streak", streak},
+		{"Longest streak", fmt.Sprintf("%d days", s.Longest)},
+		{"Completed", fmt.Sprintf("%d of %d days (%.0f%%)", s.Total, s.TrackedDays, s.Rate*100)},
+		{"Last 7 days", fmt.Sprintf("%d", s.Last7)},
+		{"Last 30 days", fmt.Sprintf("%d", s.Last30)},
+		{"Last 365 days", fmt.Sprintf("%d", s.Last365)},
+		{"Best weekday", orDash(s.BestWeekday)},
+		{"Tracking since", s.Since},
+	}
+	labelWidth := 0
+	for _, r := range rows {
+		if width(r[0]) > labelWidth {
+			labelWidth = width(r[0])
+		}
+	}
+	for _, r := range rows {
+		fmt.Fprintf(w, "  %s  %s\n", paint(pad(r[0], labelWidth, false), dim, color), r[1])
+	}
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
