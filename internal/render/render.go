@@ -4,6 +4,7 @@ package render
 import (
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -94,11 +95,97 @@ func BuildRows(habits []*model.Habit, today hdate.Date, sab model.Sabbath) []Lis
 	return rows
 }
 
+// Score is the day at a glance: how many of the habits due today are done.
+type Score struct {
+	Done  int
+	Total int
+	// Rest reports that today is the weekly rest day, when nothing is due and
+	// a percentage would read as a failing grade rather than a day off.
+	Rest bool
+}
+
+// BuildScore summarizes the rows. Archived habits are left out: they are not
+// being tracked, so they cannot be behind.
+func BuildScore(rows []ListRow) Score {
+	var s Score
+	for _, r := range rows {
+		if r.Archived {
+			continue
+		}
+		s.Total++
+		if r.DoneToday {
+			s.Done++
+		}
+		s.Rest = r.RestToday
+	}
+	return s
+}
+
+// Percent is the share of today's habits completed, rounded to the nearest
+// whole number but never all the way to either end: a day with anything left
+// cannot show 100%, and a day with anything done cannot show 0%.
+func (s Score) Percent() int {
+	if s.Total <= 0 || s.Done <= 0 {
+		return 0
+	}
+	if s.Done >= s.Total {
+		return 100
+	}
+	p := int(math.Round(float64(s.Done) / float64(s.Total) * 100))
+	if p >= 100 {
+		return 99
+	}
+	if p <= 0 {
+		return 1
+	}
+	return p
+}
+
+// scoreBar is how many columns the progress bar occupies.
+const scoreBar = 20
+
+// scoreLine renders the day's headline: a percentage, a bar, and the counts
+// behind them.
+func scoreLine(s Score, color bool) string {
+	if s.Rest {
+		note := "nothing due"
+		if s.Done > 0 {
+			note = fmt.Sprintf("%d done anyway", s.Done)
+		}
+		return fmt.Sprintf(" %s  %s",
+			paint("Rest day", bold, color), paint(note, dim, color))
+	}
+
+	pct := s.Percent()
+	filled := s.Done * scoreBar / s.Total
+	if s.Done > 0 && filled == 0 {
+		filled = 1 // any progress at all should be visible
+	}
+	bar := paint(strings.Repeat(Glyphs[4], filled), levelColors[4], color) +
+		paint(strings.Repeat(Glyphs[1], scoreBar-filled), levelColors[0], color)
+
+	shade := levelColors[4]
+	switch {
+	case pct == 0:
+		shade = dim
+	case pct < 100:
+		shade = yellow
+	}
+	return fmt.Sprintf(" %s  %s  %s",
+		paint(pad(fmt.Sprintf("%d%%", pct), 4, true), shade, color),
+		bar,
+		paint(fmt.Sprintf("%d of %d today", s.Done, s.Total), dim, color))
+}
+
 // List writes the habit table.
 func List(w io.Writer, rows []ListRow, color bool) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "No habits. Add one with: hw add <name>")
 		return
+	}
+
+	if score := BuildScore(rows); score.Total > 0 {
+		fmt.Fprintln(w, scoreLine(score, color))
 	}
 
 	headers := []string{"ID", "Habit", "Tags", "Today", "Streak", "Last 30"}
@@ -125,7 +212,8 @@ func List(w io.Writer, rows []ListRow, color bool) {
 			strings.Join(r.Tags, ","),
 			mark,
 			streak,
-			fmt.Sprintf("%d/%d", r.Last30, r.Last30Of),
+			fmt.Sprintf("%d/%d (%d%%)", r.Last30, r.Last30Of,
+				Score{Done: r.Last30, Total: r.Last30Of}.Percent()),
 		})
 	}
 

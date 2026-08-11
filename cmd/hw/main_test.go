@@ -67,7 +67,8 @@ func TestAddListDoneFlow(t *testing.T) {
 
 	c.ok("done", "meditate")
 	out = c.ok("list")
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// Skip the score headline above the table.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")[1:]
 	if !strings.Contains(lines[1], "✓") {
 		t.Errorf("meditate not marked done:\n%s", out)
 	}

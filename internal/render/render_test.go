@@ -30,7 +30,7 @@ func TestListMarksTodayAndStreak(t *testing.T) {
 	List(&buf, BuildRows([]*model.Habit{done, pending}, today, model.Sabbath{}), false)
 	out := buf.String()
 
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	lines := tableLines(out)
 	if len(lines) != 3 {
 		t.Fatalf("want a header and two rows, got:\n%s", out)
 	}
@@ -51,7 +51,7 @@ func TestListColumnsLineUpWithWideGlyphs(t *testing.T) {
 	rows := BuildRows([]*model.Habit{habit("a", 0), habit("bbbbbbb")}, today, model.Sabbath{})
 	List(&buf, rows, false)
 
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	lines := tableLines(buf.String())
 	if len(lines) != 3 {
 		t.Fatalf("unexpected output:\n%s", buf.String())
 	}
@@ -70,6 +70,18 @@ func TestListColumnsLineUpWithWideGlyphs(t *testing.T) {
 	}
 }
 
+// tableLines returns the habit table from List output, dropping the score
+// headline above it so tests can index rows without counting banner lines.
+func tableLines(out string) []string {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "ID") {
+			return lines[i:]
+		}
+	}
+	return lines
+}
+
 // indexRune reports the display column of the first occurrence of r.
 func indexRune(s string, r rune) int {
 	for i, got := range []rune(s) {
@@ -85,6 +97,120 @@ func TestListEmpty(t *testing.T) {
 	List(&buf, nil, false)
 	if !strings.Contains(buf.String(), "hw add") {
 		t.Errorf("empty list should point at hw add, got %q", buf.String())
+	}
+}
+
+func TestBuildScoreCountsActiveHabits(t *testing.T) {
+	archived := habit("old", 0)
+	archived.Archived = true
+	rows := BuildRows([]*model.Habit{
+		habit("a", 0), habit("b", 0), habit("c"), archived,
+	}, today, model.Sabbath{})
+
+	got := BuildScore(rows)
+	if got.Done != 2 || got.Total != 3 {
+		t.Errorf("BuildScore = %d of %d, want 2 of 3: archived habits are not due", got.Done, got.Total)
+	}
+	if got.Rest {
+		t.Error("Rest = true on an ordinary day")
+	}
+}
+
+func TestScorePercent(t *testing.T) {
+	cases := []struct {
+		done, total, want int
+		why               string
+	}{
+		{5, 8, 63, "rounds to nearest"},
+		{0, 3, 0, "nothing done"},
+		{3, 3, 100, "all done"},
+		{0, 0, 0, "no habits"},
+		{1, 3, 33, "rounds down"},
+		{2, 3, 67, "rounds up"},
+		{999, 1000, 99, "never rounds up to a complete day"},
+		{1, 1000, 1, "never rounds down to nothing when something was done"},
+	}
+	for _, c := range cases {
+		if got := (Score{Done: c.done, Total: c.total}).Percent(); got != c.want {
+			t.Errorf("Score{%d, %d}.Percent() = %d, want %d (%s)", c.done, c.total, got, c.want, c.why)
+		}
+	}
+}
+
+func TestListShowsTheDailyScore(t *testing.T) {
+	var buf bytes.Buffer
+	rows := BuildRows([]*model.Habit{
+		habit("a", 0), habit("b", 0), habit("c"), habit("d"), habit("e"),
+	}, today, model.Sabbath{})
+	List(&buf, rows, false)
+
+	first := strings.SplitN(buf.String(), "\n", 2)[0]
+	if !strings.Contains(first, "40%") {
+		t.Errorf("first line = %q, want the score leading the output", first)
+	}
+	if !strings.Contains(first, "2 of 5") {
+		t.Errorf("first line = %q, want the raw counts", first)
+	}
+}
+
+func TestListLast30CarriesItsPercentage(t *testing.T) {
+	var buf bytes.Buffer
+	// Thirteen of the last 26 eligible days. The Sundays sit at offsets 4, 11,
+	// 18 and 25, and none are used, so the denominator stays 26.
+	h := habit("meditate", 1, 2, 3, 5, 6, 8, 10, 12, 14, 15, 16, 17, 19)
+	List(&buf, BuildRows([]*model.Habit{h}, today, sundaySabbath), false)
+
+	row := tableLines(buf.String())[1]
+	if !strings.Contains(row, "13/26 (50%)") {
+		t.Errorf("row = %q, want the last-30 column to carry its percentage", row)
+	}
+}
+
+func TestListLast30PercentageMatchesTheScoreRounding(t *testing.T) {
+	var buf bytes.Buffer
+	// Nothing at all in the window: no percentage should imply otherwise.
+	List(&buf, BuildRows([]*model.Habit{habit("meditate")}, today, model.Sabbath{}), false)
+	if row := tableLines(buf.String())[1]; !strings.Contains(row, "0/30 (0%)") {
+		t.Errorf("row = %q, want 0/30 (0%%)", row)
+	}
+}
+
+func TestListScoreIsAbsentWithoutHabits(t *testing.T) {
+	var buf bytes.Buffer
+	List(&buf, nil, false)
+	if strings.Contains(buf.String(), "%") {
+		t.Errorf("empty list should show no score:\n%s", buf.String())
+	}
+}
+
+func TestListScoreOnARestDay(t *testing.T) {
+	restDay := hdate.New(2026, time.August, 2)
+	idle := &model.Habit{ID: 1, Name: "a", Created: restDay.Add(-30).String(), Done: []string{}}
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{idle}, restDay, sundaySabbath), false)
+	out := buf.String()
+	if !strings.Contains(out, "Rest day") {
+		t.Errorf("rest day list does not say so:\n%s", out)
+	}
+	// The headline specifically: a rest day has no score, and 0% would read as
+	// a failing grade. The Last 30 column keeps its own percentage.
+	headline := strings.SplitN(out, "\n", 2)[0]
+	if strings.Contains(headline, "%") {
+		t.Errorf("a rest day was given a score: %q", headline)
+	}
+}
+
+func TestListScoreCountsBonusWorkOnARestDay(t *testing.T) {
+	restDay := hdate.New(2026, time.August, 2)
+	worked := &model.Habit{ID: 1, Name: "a", Created: restDay.Add(-30).String(), Done: []string{}}
+	worked.MarkDone(restDay)
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{worked}, restDay, sundaySabbath), false)
+	out := buf.String()
+	if !strings.Contains(out, "Rest day") || !strings.Contains(out, "1") {
+		t.Errorf("rest day list does not report the bonus:\n%s", out)
 	}
 }
 
@@ -145,7 +271,7 @@ func TestListColumnsLineUpWithTheRestGlyph(t *testing.T) {
 	var buf bytes.Buffer
 	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), false)
 
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	lines := tableLines(buf.String())
 	if len(lines) < 3 {
 		t.Fatalf("unexpected output:\n%s", buf.String())
 	}
