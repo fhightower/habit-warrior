@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fhightower/habit-warrior/internal/hdate"
 	"github.com/fhightower/habit-warrior/internal/render"
@@ -117,7 +118,9 @@ func TestDoneRejectsFutureDates(t *testing.T) {
 	if msg := c.fails("done", "meditate", "tomorrow"); !strings.Contains(msg, "has not happened yet") {
 		t.Errorf("error = %q", msg)
 	}
-	if msg := c.fails("done", "meditate", "someday"); !strings.Contains(msg, "cannot understand date") {
+	// "someday" reads as neither a further habit nor a date, and the error says
+	// so rather than guessing which one was meant.
+	if msg := c.fails("done", "meditate", "someday"); !strings.Contains(msg, "neither a habit nor a date") {
 		t.Errorf("error = %q", msg)
 	}
 }
@@ -153,7 +156,7 @@ func TestNegativeNumberIsNotATagExclusion(t *testing.T) {
 	c.ok("add", "meditate")
 	c.ok("add", "read")
 
-	if msg := c.fails("done", "meditate", "-3"); !strings.Contains(msg, "cannot understand date") {
+	if msg := c.fails("done", "meditate", "-3"); !strings.Contains(msg, "neither a habit nor a date") {
 		t.Errorf("error = %q", msg)
 	}
 	var rows []render.ListRow
@@ -346,6 +349,139 @@ func TestHelpAndVersionAndUnknownCommand(t *testing.T) {
 	}
 	if msg := c.fails("frobnicate"); !strings.Contains(msg, "unknown command") {
 		t.Errorf("unknown command = %q", msg)
+	}
+}
+
+func TestSplitTrailingDate(t *testing.T) {
+	today := hdate.New(2026, time.August, 6) // a Thursday
+	cases := []struct {
+		name    string
+		args    []string
+		wantSel []string
+		wantDay string
+	}{
+		{"bare ids are all selectors", []string{"10", "11", "12"}, []string{"10", "11", "12"}, "2026-08-06"},
+		{"a lone id is a habit, not a date", []string{"3"}, []string{"3"}, "2026-08-06"},
+		{"trailing word date", []string{"workout", "yesterday"}, []string{"workout"}, "2026-08-05"},
+		{"multi word date takes the longest suffix", []string{"read", "3", "days", "ago"}, []string{"read"}, "2026-08-03"},
+		{"ids plus a date", []string{"1", "2", "yesterday"}, []string{"1", "2"}, "2026-08-05"},
+		{"iso date", []string{"1", "2026-08-01"}, []string{"1"}, "2026-08-01"},
+		{"weekday", []string{"workout", "mon"}, []string{"workout"}, "2026-08-03"},
+		// A date expression alone stays a selector: hw done mon means the habit
+		// called mon, which is how it behaved before dates could trail.
+		{"a lone date word is a selector", []string{"mon"}, []string{"mon"}, "2026-08-06"},
+		{"a lone iso date is a selector", []string{"2026-08-01"}, []string{"2026-08-01"}, "2026-08-06"},
+		{"nothing", nil, nil, "2026-08-06"},
+	}
+
+	for _, c := range cases {
+		sel, day := splitTrailingDate(c.args, today)
+		if strings.Join(sel, ",") != strings.Join(c.wantSel, ",") || day.String() != c.wantDay {
+			t.Errorf("%s: splitTrailingDate(%v) = (%v, %s), want (%v, %s)",
+				c.name, c.args, sel, day, c.wantSel, c.wantDay)
+		}
+	}
+}
+
+func TestDoneMarksSeveralHabitsAtOnce(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("add", "workout")
+	c.ok("add", "read")
+
+	c.ok("done", "1", "2", "3")
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	for _, r := range rows {
+		if !r.DoneToday {
+			t.Errorf("%s was not marked done", r.Name)
+		}
+	}
+}
+
+func TestDoneMarksSeveralHabitsByName(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("add", "workout")
+	c.ok("add", "read")
+
+	out := c.ok("done", "meditate", "workout")
+	if !strings.Contains(out, "meditate") || !strings.Contains(out, "workout") {
+		t.Errorf("done output = %q, want both habits named", out)
+	}
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	for _, r := range rows {
+		if want := r.Name != "read"; r.DoneToday != want {
+			t.Errorf("%s DoneToday = %v, want %v", r.Name, r.DoneToday, want)
+		}
+	}
+}
+
+func TestDoneMarksSeveralHabitsOnAGivenDay(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("add", "workout")
+
+	c.ok("done", "1", "2", "yesterday")
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	for _, r := range rows {
+		if r.DoneToday {
+			t.Errorf("%s was marked today, not yesterday", r.Name)
+		}
+		if r.Streak != 1 {
+			t.Errorf("%s streak = %d, want 1 from yesterday", r.Name, r.Streak)
+		}
+	}
+}
+
+func TestDoneWithSeveralHabitsIsAllOrNothing(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("add", "workout")
+
+	msg := c.fails("done", "1", "2", "99")
+	if !strings.Contains(msg, "99") {
+		t.Errorf("error = %q, want the bad selector named", msg)
+	}
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	for _, r := range rows {
+		if r.DoneToday {
+			t.Errorf("%s was marked despite the command failing", r.Name)
+		}
+	}
+}
+
+func TestDoneIgnoresRepeatedSelectors(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+
+	out := c.ok("done", "1", "meditate", "med")
+	if strings.Count(out, "meditate") != 1 {
+		t.Errorf("done output = %q, want the habit named once", out)
+	}
+}
+
+func TestUndoUnmarksSeveralHabitsAtOnce(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("add", "workout")
+	c.ok("done", "1", "2")
+
+	c.ok("undo", "1", "2")
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	for _, r := range rows {
+		if r.DoneToday {
+			t.Errorf("%s is still marked done", r.Name)
+		}
 	}
 }
 

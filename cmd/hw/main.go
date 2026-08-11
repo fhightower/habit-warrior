@@ -23,8 +23,8 @@ const usage = `hw - habit warrior, a tracker for daily habits
 Usage:
   hw                               Table of habits (same as hw list)
   hw add <name> [+tag...]          Start tracking a habit
-  hw done <habit|+tag> [date]      Mark done (default: today)
-  hw undo <habit|+tag> [date]      Unmark
+  hw done <habit...|+tag> [date]   Mark done (default: today)
+  hw undo <habit...|+tag> [date]   Unmark
   hw list [+tag] [-tag] [--all]    Table of habits, streaks, last 30 days
   hw cal [habit] [+tag] [--weeks N]  Heatmap (default: 26 weeks)
   hw stats [habit] [+tag]          Streaks and completion rates
@@ -295,8 +295,47 @@ func cmdAdd(stdout io.Writer, store *model.Store, opts options, args []string, t
 		fmt.Sprintf("Added %s (#%d)", h.Name, h.ID))
 }
 
-// cmdMark handles both done and undo, for one habit or every habit matching a
-// tag filter.
+// splitTrailingDate divides positional arguments into habit selectors and an
+// optional trailing date, so that several habits can be named at once.
+//
+// The date is the longest suffix that parses as one, provided at least one
+// argument is left in front of it. That proviso is what keeps a bare "hw done
+// mon" meaning the habit called mon rather than last Monday, and "hw done 3"
+// meaning habit 3. Arguments that carry no date at all, like "hw done 10 11
+// 12", are all selectors for today.
+func splitTrailingDate(args []string, today hdate.Date) ([]string, hdate.Date) {
+	for k := 1; k < len(args); k++ {
+		if d, err := hdate.Parse(strings.Join(args[k:], " "), today); err == nil {
+			return args[:k], d
+		}
+	}
+	return args, today
+}
+
+// resolve turns selectors into habits, in the order given and without
+// repeats, failing on the first one that does not name exactly one habit and
+// reporting its position. Resolving everything up front keeps a command that
+// names a habit that does not exist from marking the others on its way to the
+// error.
+func resolve(store *model.Store, selectors []string) (targets []*model.Habit, bad int, err error) {
+	targets = make([]*model.Habit, 0, len(selectors))
+	seen := make(map[int]bool, len(selectors))
+	for i, sel := range selectors {
+		h, err := store.Find(sel)
+		if err != nil {
+			return nil, i, err
+		}
+		if seen[h.ID] {
+			continue
+		}
+		seen[h.ID] = true
+		targets = append(targets, h)
+	}
+	return targets, -1, nil
+}
+
+// cmdMark handles both done and undo, for any number of habits or every habit
+// matching a tag filter.
 func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, today hdate.Date, done bool) error {
 	verb := "done"
 	if !done {
@@ -306,36 +345,43 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 	filter, rest := model.ParseArgs(args)
 
 	var targets []*model.Habit
+	day := today
 	if filter.Empty() {
 		if len(rest) == 0 {
-			return userErr("usage: hw %s <habit|+tag> [date]", verb)
+			return userErr("usage: hw %s <habit...|+tag> [date]", verb)
 		}
-		h, err := store.Find(rest[0])
-		if err != nil {
+		var selectors []string
+		selectors, day = splitTrailingDate(rest, today)
+		var (
+			bad int
+			err error
+		)
+		if targets, bad, err = resolve(store, selectors); err != nil {
+			// Anything after the first argument could have been meant as a
+			// date instead, and splitTrailingDate has already established that
+			// it does not parse as one. Saying only that it is not a habit
+			// would send someone off hunting the wrong mistake.
+			if bad > 0 {
+				return userErr("%q is neither a habit nor a date", strings.Join(selectors[bad:], " "))
+			}
 			return userErr("%s", err)
 		}
-		targets = []*model.Habit{h}
-		rest = rest[1:]
 	} else {
 		targets = store.Select(filter, false)
 		if len(targets) == 0 {
 			return userErr("no habits match that filter")
 		}
-	}
-
-	day := today
-	if expr := strings.Join(rest, " "); expr != "" {
-		d, err := hdate.Parse(expr, today)
-		if err != nil {
-			// In bulk mode everything after the tags has to be a date, so a
-			// leftover habit name lands here rather than being ignored.
-			if !filter.Empty() {
+		// In bulk mode everything after the tags has to be a date, so a
+		// leftover habit name lands here rather than being ignored.
+		if expr := strings.Join(rest, " "); expr != "" {
+			d, err := hdate.Parse(expr, today)
+			if err != nil {
 				return userErr("give a habit or tag filters, not both")
 			}
-			return userErr("%s", err)
+			day = d
 		}
-		day = d
 	}
+
 	if day.After(today) {
 		return userErr("cannot log %s: that day has not happened yet", day)
 	}

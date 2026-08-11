@@ -33,6 +33,8 @@ hw add "read a book" +mind
 hw done workout              # today
 hw done workout yesterday    # backfill
 hw done read 3 days ago
+hw done 10 11 12             # several at once
+hw done workout read mon     # several, on a given day
 hw done +morning              # everything tagged morning
 
 hw list
@@ -63,6 +65,20 @@ hw done workout
 hw done work
 hw done out
 ```
+
+`done` and `undo` take several habits at once. Nothing is marked unless every
+one of them names a habit, so a typo costs you the command rather than half of
+it:
+
+```
+hw done 10 11 12
+hw done workout read yesterday
+```
+
+A trailing date is read as a date whenever one is there and at least one habit
+comes first, which leaves `hw done mon` meaning the habit called `mon` and
+`hw done 3` meaning habit 3. Quote a name that contains spaces, since each
+bare word is otherwise its own selector.
 
 ### Dates
 
@@ -103,8 +119,8 @@ whole group at once.
 | `hw` | Table of habits, same as `hw list` |
 | `hw help` | Print the help message |
 | `hw add <name> [+tag...]` | Start tracking a habit |
-| `hw done <habit\|+tag> [date]` | Mark done |
-| `hw undo <habit\|+tag> [date]` | Unmark |
+| `hw done <habit...\|+tag> [date]` | Mark done, one habit or several |
+| `hw undo <habit...\|+tag> [date]` | Unmark |
 | `hw list [+tag] [-tag] [--all]` | Table of habits, streaks, last 30 days |
 | `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |
 | `hw stats [habit] [+tag]` | Streaks, rates, best weekday |
