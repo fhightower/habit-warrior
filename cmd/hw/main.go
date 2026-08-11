@@ -23,7 +23,7 @@ const usage = `hw - habit warrior, a tracker for daily habits
 Usage:
   hw                               Table of habits (same as hw list)
   hw add <name> [+tag...]          Start tracking a habit
-  hw done <habit...|+tag> [date]   Mark done (default: today)
+  hw done <habit...|+tag> [date] ["note"]  Mark done (default: today)
   hw undo <habit...|+tag> [date]   Unmark
   hw list [+tag] [-tag] [--all]    Table of habits, streaks, last 30 days
   hw cal [habit] [+tag] [--weeks N]  Heatmap (default: 26 weeks)
@@ -37,6 +37,12 @@ Usage:
 
 Habits are selected by ID, exact name, unique name prefix, or unique substring.
 Dates accept: today, yesterday, 3d, 3 days ago, mon, 2026-08-01.
+
+A quoted phrase after the habits is a note on that completion, and --note
+takes one that happens to be a single word:
+
+  hw done workout "3 x max pullups"
+  hw done workout --note tired
 
 One day a week is a sabbath: a rest day that neither breaks a streak nor counts
 against a completion rate, marked - in reports. It is Sunday unless you say
@@ -303,13 +309,36 @@ func cmdAdd(stdout io.Writer, store *model.Store, opts options, args []string, t
 // mon" meaning the habit called mon rather than last Monday, and "hw done 3"
 // meaning habit 3. Arguments that carry no date at all, like "hw done 10 11
 // 12", are all selectors for today.
-func splitTrailingDate(args []string, today hdate.Date) ([]string, hdate.Date) {
-	for k := 1; k < len(args); k++ {
+// keep is how many arguments must survive in front of the date: one when the
+// arguments name habits, none when a tag filter has already named them.
+func splitTrailingDate(args []string, today hdate.Date, keep int) ([]string, hdate.Date) {
+	for k := keep; k < len(args); k++ {
 		if d, err := hdate.Parse(strings.Join(args[k:], " "), today); err == nil {
 			return args[:k], d
 		}
 	}
 	return args, today
+}
+
+// splitTrailingNote peels a note off the end of the habit selectors.
+//
+// A note is an argument carrying spaces, which the shell only produces when it
+// was quoted, and only once a habit has already been named. Requiring an
+// earlier selector is what keeps hw done "read a book" selecting that habit
+// rather than writing a note about nothing, and requiring spaces is what keeps
+// a mistyped one-word habit an error instead of a silent note.
+//
+// A one-word note has no unambiguous spelling here, so --note carries those.
+// keep has the same meaning as in splitTrailingDate.
+func splitTrailingNote(args []string, keep int) ([]string, string) {
+	if len(args) <= keep {
+		return args, ""
+	}
+	last := args[len(args)-1]
+	if !strings.ContainsAny(last, " \t") {
+		return args, ""
+	}
+	return args[:len(args)-1], strings.TrimSpace(last)
 }
 
 // resolve turns selectors into habits, in the order given and without
@@ -342,20 +371,31 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 		verb = "undo"
 	}
 
+	args, note, err := takeValue(args, "--note")
+	if err != nil {
+		return err
+	}
+	if !done && note != "" {
+		return userErr("undo does not take a note: a note describes a completion")
+	}
+
 	filter, rest := model.ParseArgs(args)
 
 	var targets []*model.Habit
 	day := today
 	if filter.Empty() {
 		if len(rest) == 0 {
-			return userErr("usage: hw %s <habit...|+tag> [date]", verb)
+			return userErr("usage: hw %s <habit...|+tag> [date] [\"note\"]", verb)
 		}
 		var selectors []string
-		selectors, day = splitTrailingDate(rest, today)
-		var (
-			bad int
-			err error
-		)
+		selectors, day = splitTrailingDate(rest, today, 1)
+		if note == "" {
+			selectors, note = splitTrailingNote(selectors, 1)
+			if !done && note != "" {
+				return userErr("undo does not take a note: a note describes a completion")
+			}
+		}
+		var bad int
 		if targets, bad, err = resolve(store, selectors); err != nil {
 			// Anything after the first argument could have been meant as a
 			// date instead, and splitTrailingDate has already established that
@@ -371,14 +411,18 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 		if len(targets) == 0 {
 			return userErr("no habits match that filter")
 		}
-		// In bulk mode everything after the tags has to be a date, so a
-		// leftover habit name lands here rather than being ignored.
-		if expr := strings.Join(rest, " "); expr != "" {
-			d, err := hdate.Parse(expr, today)
-			if err != nil {
-				return userErr("give a habit or tag filters, not both")
+		// The filter has already named the habits, so what follows is at most a
+		// date and a note. Anything else is a leftover habit name, which lands
+		// in the error below rather than being ignored.
+		rest, day = splitTrailingDate(rest, today, 0)
+		if note == "" {
+			rest, note = splitTrailingNote(rest, 0)
+			if !done && note != "" {
+				return userErr("undo does not take a note: a note describes a completion")
 			}
-			day = d
+		}
+		if len(rest) > 0 {
+			return userErr("give a habit or tag filters, not both")
 		}
 	}
 
@@ -390,6 +434,11 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 	for _, h := range targets {
 		if done {
 			if h.MarkDone(day) {
+				changed++
+			}
+			// Re-noting a day that was already done is still a change, so it
+			// does not report back as a no-op.
+			if note != "" && h.SetNote(day, note) {
 				changed++
 			}
 		} else if h.Undo(day) {
@@ -418,6 +467,9 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 	msg := fmt.Sprintf("%s for %s: %s", action, when, strings.Join(names, ", "))
 	if changed == 0 {
 		msg = fmt.Sprintf("No change for %s: %s", when, strings.Join(names, ", "))
+	}
+	if note != "" {
+		msg += fmt.Sprintf("\n  %s", note)
 	}
 	return emit(stdout, opts, targets, today, msg)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -480,6 +481,35 @@ func Stats(w io.Writer, s model.Stats, color bool) {
 	for _, r := range rows {
 		fmt.Fprintf(w, "  %s  %s\n", paint(pad(r[0], labelWidth, false), dim, color), r[1])
 	}
+
+	if dates := recentNoteDates(s.Notes, noteLimit); len(dates) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, paint("  Recent notes", bold, color))
+		for _, d := range dates {
+			fmt.Fprintf(w, "  %s  %s\n", paint(d, dim, color), s.Notes[d])
+		}
+	}
+}
+
+// noteLimit is how many notes the stats report shows, newest first. The whole
+// set is still in the JSON for anyone who wants it.
+const noteLimit = 5
+
+// recentNoteDates returns up to n note dates, newest first.
+func recentNoteDates(notes map[string]string, n int) []string {
+	if len(notes) == 0 {
+		return nil
+	}
+	dates := make([]string, 0, len(notes))
+	for d := range notes {
+		dates = append(dates, d)
+	}
+	// ISO dates sort chronologically as strings.
+	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
+	if len(dates) > n {
+		dates = dates[:n]
+	}
+	return dates
 }
 
 func orDash(s string) string {

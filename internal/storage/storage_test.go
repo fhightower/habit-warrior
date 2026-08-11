@@ -110,6 +110,46 @@ func TestVersionOneFileLoadsWithTheDefaultSabbath(t *testing.T) {
 	}
 }
 
+func TestNotesSurviveRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	today := hdate.New(2026, time.August, 6)
+
+	s := model.NewStore()
+	h, _ := s.Add("workout", nil, today)
+	h.MarkDone(today)
+	h.SetNote(today, "3 x max pullups")
+	if err := Save(path, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if note := got.Habits[0].Note(today); note != "3 x max pullups" {
+		t.Errorf("note after round trip = %q, want the text written", note)
+	}
+}
+
+func TestSaveOmitsNotesWhenThereAreNone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	today := hdate.New(2026, time.August, 6)
+
+	s := model.NewStore()
+	h, _ := s.Add("workout", nil, today)
+	h.MarkDone(today)
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "notes") {
+		t.Errorf("a habit with no notes wrote a notes key:\n%s", data)
+	}
+}
+
 func TestSaveOmitsConfigThatWasNeverSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "habits.json")
 	if err := Save(path, model.NewStore()); err != nil {

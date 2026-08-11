@@ -376,7 +376,7 @@ func TestSplitTrailingDate(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		sel, day := splitTrailingDate(c.args, today)
+		sel, day := splitTrailingDate(c.args, today, 1)
 		if strings.Join(sel, ",") != strings.Join(c.wantSel, ",") || day.String() != c.wantDay {
 			t.Errorf("%s: splitTrailingDate(%v) = (%v, %s), want (%v, %s)",
 				c.name, c.args, sel, day, c.wantSel, c.wantDay)
@@ -483,6 +483,145 @@ func TestUndoUnmarksSeveralHabitsAtOnce(t *testing.T) {
 		if r.DoneToday {
 			t.Errorf("%s is still marked done", r.Name)
 		}
+	}
+}
+
+func TestSplitTrailingNote(t *testing.T) {
+	cases := []struct {
+		name     string
+		sel      []string
+		wantSel  []string
+		wantNote string
+	}{
+		{"phrase after a habit is a note", []string{"workout", "3 x max pullups"},
+			[]string{"workout"}, "3 x max pullups"},
+		{"phrase after several habits is a note", []string{"1", "2", "did both"},
+			[]string{"1", "2"}, "did both"},
+		// A quoted name is how a habit with spaces is selected, so a lone
+		// phrase has to stay a selector.
+		{"a lone phrase is a selector", []string{"read a book"},
+			[]string{"read a book"}, ""},
+		{"bare words stay selectors", []string{"10", "11", "12"},
+			[]string{"10", "11", "12"}, ""},
+		{"single habit, no note", []string{"workout"}, []string{"workout"}, ""},
+		{"nothing", nil, nil, ""},
+	}
+	for _, c := range cases {
+		sel, note := splitTrailingNote(c.sel, 1)
+		if strings.Join(sel, "|") != strings.Join(c.wantSel, "|") || note != c.wantNote {
+			t.Errorf("%s: splitTrailingNote(%v) = (%v, %q), want (%v, %q)",
+				c.name, c.sel, sel, note, c.wantSel, c.wantNote)
+		}
+	}
+}
+
+func TestDoneAttachesANote(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+
+	out := c.ok("done", "workout", "3 x max pullups")
+	if !strings.Contains(out, "3 x max pullups") {
+		t.Errorf("done output = %q, want the note echoed back", out)
+	}
+
+	var stats map[string]any
+	unmarshal(t, c.ok("stats", "workout", "--json"), &stats)
+	notes, _ := stats["notes"].(map[string]any)
+	if len(notes) != 1 {
+		t.Fatalf("stats notes = %v, want one entry", stats["notes"])
+	}
+	for _, v := range notes {
+		if v != "3 x max pullups" {
+			t.Errorf("note = %v, want the text given", v)
+		}
+	}
+}
+
+func TestDoneNoteOnAGivenDayAndSeveralHabits(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+	c.ok("add", "stretch")
+
+	c.ok("done", "workout", "stretch", "felt strong", "yesterday")
+
+	for _, name := range []string{"workout", "stretch"} {
+		var stats map[string]any
+		unmarshal(t, c.ok("stats", name, "--json"), &stats)
+		notes, _ := stats["notes"].(map[string]any)
+		if len(notes) != 1 {
+			t.Errorf("%s notes = %v, want one entry", name, stats["notes"])
+			continue
+		}
+		if got := notes[hdate.Today().Add(-1).String()]; got != "felt strong" {
+			t.Errorf("%s note = %v, want it on yesterday", name, got)
+		}
+	}
+}
+
+func TestDoneWithNoteFlagAcceptsASingleWord(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+
+	c.ok("done", "workout", "--note", "tired")
+
+	var stats map[string]any
+	unmarshal(t, c.ok("stats", "workout", "--json"), &stats)
+	notes, _ := stats["notes"].(map[string]any)
+	if got := notes[hdate.Today().String()]; got != "tired" {
+		t.Errorf("note = %v, want tired", got)
+	}
+}
+
+func TestDoneUpdatesAnExistingNote(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+	c.ok("done", "workout", "first try")
+
+	// The day is already done, but the note changed, so this is not "no change".
+	out := c.ok("done", "workout", "second try")
+	if strings.Contains(out, "No change") {
+		t.Errorf("re-noting an already-done day reported no change: %q", out)
+	}
+
+	var stats map[string]any
+	unmarshal(t, c.ok("stats", "workout", "--json"), &stats)
+	notes, _ := stats["notes"].(map[string]any)
+	if got := notes[hdate.Today().String()]; got != "second try" {
+		t.Errorf("note = %v, want the replacement", got)
+	}
+}
+
+func TestQuotedHabitNameIsStillASelector(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "read a book")
+
+	c.ok("done", "read a book")
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	if len(rows) != 1 || !rows[0].DoneToday {
+		t.Errorf("a quoted habit name stopped selecting the habit: %+v", rows)
+	}
+}
+
+func TestUndoRejectsANote(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+	c.ok("done", "workout", "3 x max pullups")
+
+	if msg := c.fails("undo", "workout", "some note"); !strings.Contains(msg, "note") {
+		t.Errorf("undo with a note = %q, want it refused", msg)
+	}
+}
+
+func TestStatsShowsNotes(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+	c.ok("done", "workout", "3 x max pullups")
+
+	out := c.ok("stats", "workout")
+	if !strings.Contains(out, "3 x max pullups") {
+		t.Errorf("stats does not show the note:\n%s", out)
 	}
 }
 

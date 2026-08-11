@@ -89,6 +89,26 @@ comes first, which leaves `hw done mon` meaning the habit called `mon` and
 `hw done 3` meaning habit 3. Quote a name that contains spaces, since each
 bare word is otherwise its own selector.
 
+### Notes
+
+A quoted phrase after the habits is a note on that completion:
+
+```
+hw done workout "3 x max pullups"
+hw done workout stretch "felt strong" yesterday
+hw done workout --note tired
+```
+
+A phrase counts as a note only once a habit has been named, so `hw done "read a
+book"` still selects that habit rather than writing a note about nothing. Bare
+words are always selectors, which is what keeps a mistyped habit an error
+instead of a silent note; `--note` covers the one-word case that has no
+unambiguous spelling otherwise.
+
+Re-noting a day you had already marked replaces the text. `hw undo` discards
+the note along with the completion it described, and refuses a note of its own.
+`hw stats <habit>` shows the five most recent, and `--json` carries them all.
+
 ### Dates
 
 `today`, `yesterday`, `tomorrow`, `3d`, `3 days ago`, `mon` (the most recent
@@ -128,7 +148,7 @@ whole group at once.
 | `hw` | Table of habits, same as `hw list` |
 | `hw help` | Print the help message |
 | `hw add <name> [+tag...]` | Start tracking a habit |
-| `hw done <habit...\|+tag> [date]` | Mark done, one habit or several |
+| `hw done <habit...\|+tag> [date] ["note"]` | Mark done, one habit or several |
 | `hw undo <habit...\|+tag> [date]` | Unmark |
 | `hw list [+tag] [-tag] [--all]` | Daily score, then habits, streaks, last 30 days |
 | `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |
@@ -148,7 +168,7 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "next_id": 2,
   "config": {
     "sabbath": "sunday"
@@ -159,7 +179,8 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
       "name": "workout",
       "tags": ["health", "morning"],
       "created": "2026-05-11",
-      "done": ["2026-08-06", "2026-08-07"]
+      "done": ["2026-08-06", "2026-08-07"],
+      "notes": {"2026-08-07": "3 x max pullups"}
     }
   ]
 }
@@ -167,9 +188,13 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
 
 `config` appears once you have set something; without it the defaults apply, so
 a file written by an earlier version reads correctly and rests on Sunday.
-`sabbath` is a lowercase weekday name, or `"none"` to disable. Version 2 added
-the key, and an older `hw` will refuse a version 2 file rather than quietly
-ignore a rest day it does not understand.
+`sabbath` is a lowercase weekday name, or `"none"` to disable. `notes` appears
+only on habits that have one, keyed by the day it describes.
+
+Each schema version exists so an older `hw` refuses the file rather than
+mishandling it: version 2 added `config`, which an older build would ignore
+while reporting the wrong streaks, and version 3 added `notes`, which it would
+drop on its next write.
 
 Writes go through a temporary file and a rename, so an interrupted write cannot
 truncate your history. A file that fails to parse is reported, never

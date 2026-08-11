@@ -12,10 +12,12 @@ import (
 	"github.com/fhightower/habit-warrior/internal/hdate"
 )
 
-// Version is the on-disk schema version. Version 2 added the config object;
-// the bump makes an older binary refuse a file whose sabbath setting it would
-// otherwise ignore, silently reporting the wrong streaks.
-const Version = 2
+// Version is the on-disk schema version. Version 2 added the config object,
+// whose sabbath setting an older binary would ignore while reporting the wrong
+// streaks. Version 3 added per-completion notes, which an older binary would
+// drop on its next write. Both bumps exist so that older binary refuses the
+// file instead.
+const Version = 3
 
 // Habit is one binary daily habit: on any given day it was done or it wasn't.
 type Habit struct {
@@ -25,6 +27,33 @@ type Habit struct {
 	Created  string   `json:"created"`
 	Archived bool     `json:"archived,omitempty"`
 	Done     []string `json:"done"` // ISO dates, sorted and unique
+	// Notes holds what you wrote about a completion, keyed by ISO date. It
+	// rides alongside Done rather than inside it so that the completion list
+	// stays a plain sorted array of dates.
+	Notes map[string]string `json:"notes,omitempty"`
+}
+
+// Note is what was written about the completion on d, empty when there is
+// nothing.
+func (h *Habit) Note(d hdate.Date) string { return h.Notes[d.String()] }
+
+// SetNote records text against a day, reporting whether anything changed.
+// Empty text removes the note.
+func (h *Habit) SetNote(d hdate.Date, text string) bool {
+	s := d.String()
+	text = strings.TrimSpace(text)
+	if h.Notes[s] == text {
+		return false
+	}
+	if text == "" {
+		delete(h.Notes, s)
+		return true
+	}
+	if h.Notes == nil {
+		h.Notes = map[string]string{}
+	}
+	h.Notes[s] = text
+	return true
 }
 
 // Store is the whole data file.
@@ -75,7 +104,9 @@ func (h *Habit) MarkDone(d hdate.Date) bool {
 	return true
 }
 
-// Undo removes a completion, reporting whether anything changed.
+// Undo removes a completion, reporting whether anything changed. Any note goes
+// with it: a note describes a completion, and leaving it behind would attach
+// stale text to whatever gets logged for that day next.
 func (h *Habit) Undo(d hdate.Date) bool {
 	s := d.String()
 	i := sort.SearchStrings(h.Done, s)
@@ -83,6 +114,7 @@ func (h *Habit) Undo(d hdate.Date) bool {
 		return false
 	}
 	h.Done = append(h.Done[:i], h.Done[i+1:]...)
+	delete(h.Notes, s)
 	return true
 }
 
@@ -209,6 +241,8 @@ type Stats struct {
 	Last365Of   int     `json:"last_365_of"`
 	BestWeekday string  `json:"best_weekday"`
 	DoneToday   bool    `json:"done_today"`
+	// Notes is what was written about each completion, keyed by ISO date.
+	Notes map[string]string `json:"notes,omitempty"`
 	// Sabbath names the weekly rest day, empty when sabbath mode is off.
 	Sabbath string `json:"sabbath"`
 	// RestToday reports whether today is the rest day.
@@ -260,6 +294,7 @@ func (h *Habit) Stats(today hdate.Date, sab Sabbath) Stats {
 		Last365Of:   last365of,
 		BestWeekday: h.bestWeekday(),
 		DoneToday:   h.IsDone(today),
+		Notes:       h.Notes,
 		Sabbath:     sabbathName(sab),
 		RestToday:   sab.Rest(today),
 	}
