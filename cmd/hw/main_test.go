@@ -338,14 +338,56 @@ func TestHelpAndVersionAndUnknownCommand(t *testing.T) {
 	if out := c.ok("--help"); !strings.Contains(out, "hw add") {
 		t.Errorf("help = %q", out)
 	}
-	if out := c.ok(); !strings.Contains(out, "Usage:") {
-		t.Errorf("bare hw = %q", out)
+	if out := c.ok("help"); !strings.Contains(out, "Usage:") {
+		t.Errorf("hw help = %q", out)
 	}
 	if out := c.ok("--version"); !strings.Contains(out, version) {
 		t.Errorf("version = %q", out)
 	}
 	if msg := c.fails("frobnicate"); !strings.Contains(msg, "unknown command") {
 		t.Errorf("unknown command = %q", msg)
+	}
+}
+
+func TestBareCommandListsHabits(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate", "+calm")
+	c.ok("add", "workout")
+	c.ok("done", "meditate")
+
+	bare := c.ok()
+	if strings.Contains(bare, "Usage:") {
+		t.Fatalf("bare hw still prints the help message:\n%s", bare)
+	}
+	if bare != c.ok("list") {
+		t.Errorf("bare hw and hw list disagree:\n%s\n---\n%s", bare, c.ok("list"))
+	}
+	for _, want := range []string{"meditate", "workout", "calm", "✓"} {
+		if !strings.Contains(bare, want) {
+			t.Errorf("bare hw output is missing %q:\n%s", want, bare)
+		}
+	}
+}
+
+func TestBareCommandOnAnEmptyStorePointsAtAdd(t *testing.T) {
+	c := newCLI(t)
+	out := c.ok()
+	if strings.Contains(out, "Usage:") {
+		t.Errorf("bare hw on an empty store printed the help message:\n%s", out)
+	}
+	if !strings.Contains(out, "hw add") {
+		t.Errorf("bare hw on an empty store should point at hw add, got:\n%s", out)
+	}
+}
+
+func TestBareCommandHonoursGlobalFlags(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate")
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("--json"), &rows)
+	if len(rows) != 1 || rows[0].Name != "meditate" {
+		t.Errorf("hw --json = %+v, want the habit list", rows)
 	}
 }
 

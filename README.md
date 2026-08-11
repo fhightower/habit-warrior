@@ -100,6 +100,8 @@ whole group at once.
 
 | Command | What it does |
 |---|---|
+| `hw` | Table of habits, same as `hw list` |
+| `hw help` | Print the help message |
 | `hw add <name> [+tag...]` | Start tracking a habit |
 | `hw done <habit\|+tag> [date]` | Mark done |
 | `hw undo <habit\|+tag> [date]` | Unmark |

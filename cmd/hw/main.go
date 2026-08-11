@@ -21,6 +21,7 @@ const version = "0.1.0"
 const usage = `hw - habit warrior, a tracker for daily habits
 
 Usage:
+  hw                               Table of habits (same as hw list)
   hw add <name> [+tag...]          Start tracking a habit
   hw done <habit|+tag> [date]      Mark done (default: today)
   hw undo <habit|+tag> [date]      Unmark
@@ -138,7 +139,7 @@ func run(argv []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "hw %s\n", version)
 		return nil
 	}
-	if showHelp || len(args) == 0 {
+	if showHelp {
 		fmt.Fprint(stdout, usage)
 		return nil
 	}
@@ -159,7 +160,12 @@ func run(argv []string, stdout io.Writer) error {
 	}
 	opts.sabbath = store.Sabbath()
 
-	cmd, rest := args[0], args[1:]
+	// Bare hw shows the habit table: the thing you came to look at. The help
+	// is a keystroke away as hw help.
+	cmd, rest := "list", []string{}
+	if len(args) > 0 {
+		cmd, rest = args[0], args[1:]
+	}
 	today := hdate.Today()
 
 	switch cmd {
