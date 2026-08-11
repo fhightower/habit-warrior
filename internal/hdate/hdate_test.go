@@ -95,6 +95,35 @@ func TestFromTimeUsesLocalCalendarDay(t *testing.T) {
 	}
 }
 
+func TestParseWeekday(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Weekday
+	}{
+		{"sun", time.Sunday},
+		{"Sunday", time.Sunday},
+		{"SAT", time.Saturday},
+		{"  weds  ", time.Wednesday},
+		{"thurs", time.Thursday},
+	}
+	for _, c := range cases {
+		got, ok := ParseWeekday(c.in)
+		if !ok {
+			t.Errorf("ParseWeekday(%q) not recognized", c.in)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseWeekday(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+
+	for _, bad := range []string{"", "someday", "sundae", "1"} {
+		if got, ok := ParseWeekday(bad); ok {
+			t.Errorf("ParseWeekday(%q) = %s, want rejection", bad, got)
+		}
+	}
+}
+
 func TestParseISORoundTrip(t *testing.T) {
 	d, err := ParseISO("2026-02-29")
 	if err == nil {

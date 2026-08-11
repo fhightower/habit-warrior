@@ -89,7 +89,7 @@ func Parse(s string, today Date) (Date, error) {
 		return today.Add(-n), nil
 	}
 
-	if wd, ok := parseWeekday(norm); ok {
+	if wd, ok := ParseWeekday(norm); ok {
 		back := (int(today.Weekday()) - int(wd) + 7) % 7
 		return today.Add(-back), nil
 	}
@@ -123,7 +123,9 @@ var weekdays = map[string]time.Weekday{
 	"sat": time.Saturday, "saturday": time.Saturday,
 }
 
-func parseWeekday(s string) (time.Weekday, bool) {
-	wd, ok := weekdays[s]
+// ParseWeekday reads a weekday name or abbreviation, ignoring case and
+// surrounding space: "sun", "Sunday", "SAT", "thurs".
+func ParseWeekday(s string) (time.Weekday, bool) {
+	wd, ok := weekdays[strings.ToLower(strings.TrimSpace(s))]
 	return wd, ok
 }

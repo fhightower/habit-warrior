@@ -27,7 +27,7 @@ func TestListMarksTodayAndStreak(t *testing.T) {
 	pending.ID = 2
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{done, pending}, today), false)
+	List(&buf, BuildRows([]*model.Habit{done, pending}, today, model.Sabbath{}), false)
 	out := buf.String()
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
@@ -48,7 +48,7 @@ func TestListMarksTodayAndStreak(t *testing.T) {
 
 func TestListColumnsLineUpWithWideGlyphs(t *testing.T) {
 	var buf bytes.Buffer
-	rows := BuildRows([]*model.Habit{habit("a", 0), habit("bbbbbbb")}, today)
+	rows := BuildRows([]*model.Habit{habit("a", 0), habit("bbbbbbb")}, today, model.Sabbath{})
 	List(&buf, rows, false)
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -88,9 +88,136 @@ func TestListEmpty(t *testing.T) {
 	}
 }
 
+// sundaySabbath rests on Sunday, which for the 2026-08-06 anchor is 2026-08-02.
+var sundaySabbath = model.Sabbath{Day: time.Sunday, On: true}
+
+func TestListShowsRestInsteadOfAMiss(t *testing.T) {
+	// Anchor on the rest day itself, with the habit not done.
+	restDay := hdate.New(2026, time.August, 2)
+	h := &model.Habit{ID: 1, Name: "meditate", Created: restDay.Add(-30).String(), Done: []string{}}
+
+	var buf bytes.Buffer
+	rows := BuildRows([]*model.Habit{h}, restDay, sundaySabbath)
+	if !rows[0].RestToday {
+		t.Fatal("RestToday = false on the rest day")
+	}
+	List(&buf, rows, false)
+
+	out := buf.String()
+	if !strings.Contains(out, RestGlyph) {
+		t.Errorf("list does not mark the rest day with %q:\n%s", RestGlyph, out)
+	}
+	if strings.Contains(out, Glyphs[0]) {
+		t.Errorf("rest day still reads as a miss:\n%s", out)
+	}
+}
+
+func TestListLast30DropsRestDaysFromTheDenominator(t *testing.T) {
+	// Done every day for the last 30, rest days included in the window.
+	offsets := make([]int, 30)
+	for i := range offsets {
+		offsets[i] = i
+	}
+	h := habit("meditate", offsets...)
+
+	var buf bytes.Buffer
+	rows := BuildRows([]*model.Habit{h}, today, sundaySabbath)
+	List(&buf, rows, false)
+	if !strings.Contains(buf.String(), "30/30") {
+		t.Errorf("a perfect month should read 30/30 when rest days were done anyway:\n%s", buf.String())
+	}
+
+	// Nothing done: the four Sundays in the window leave 26 eligible days.
+	empty := habit("skip")
+	var buf2 bytes.Buffer
+	List(&buf2, BuildRows([]*model.Habit{empty}, today, sundaySabbath), false)
+	if !strings.Contains(buf2.String(), "0/26") {
+		t.Errorf("want 0/26 with four rest days excluded:\n%s", buf2.String())
+	}
+}
+
+func TestListColumnsLineUpWithTheRestGlyph(t *testing.T) {
+	restDay := hdate.New(2026, time.August, 2)
+	done := &model.Habit{ID: 1, Name: "a", Created: restDay.Add(-30).String(), Done: []string{}}
+	done.MarkDone(restDay)
+	resting := &model.Habit{ID: 2, Name: "b", Created: restDay.Add(-30).String(), Done: []string{}}
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), false)
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("unexpected output:\n%s", buf.String())
+	}
+	markerCol := indexRune(lines[1], '✓')
+	restCol := indexRune(lines[2], []rune(RestGlyph)[0])
+	if markerCol < 0 || markerCol != restCol {
+		t.Errorf("marker column drifted: ✓ at %d, rest at %d", markerCol, restCol)
+	}
+}
+
+func TestBuildCalFlagsRestDays(t *testing.T) {
+	h := habit("meditate", 0)
+	cal := BuildCal([]*model.Habit{h}, today, 4, sundaySabbath)
+
+	rest := map[string]bool{}
+	for _, d := range cal.Days {
+		rest[d.Date] = d.Rest
+	}
+	if !rest["2026-08-02"] {
+		t.Error("Sunday 2026-08-02 is not flagged as a rest day")
+	}
+	if rest["2026-08-03"] {
+		t.Error("Monday 2026-08-03 is flagged as a rest day")
+	}
+	if !rest["2026-07-26"] {
+		t.Error("the earlier Sunday is not flagged as a rest day")
+	}
+}
+
+func TestCalDrawsRestDaysDistinctly(t *testing.T) {
+	var buf bytes.Buffer
+	cal := BuildCal([]*model.Habit{habit("meditate", 0)}, today, 4, sundaySabbath)
+	Cal(&buf, cal, "meditate", false)
+
+	out := buf.String()
+	if !strings.Contains(out, RestGlyph) {
+		t.Errorf("calendar does not draw rest days with %q:\n%s", RestGlyph, out)
+	}
+	if !strings.Contains(out, "rest") {
+		t.Errorf("calendar legend does not explain the rest glyph:\n%s", out)
+	}
+}
+
+func TestCalWithSabbathOffDrawsNoRestGlyph(t *testing.T) {
+	var buf bytes.Buffer
+	cal := BuildCal([]*model.Habit{habit("meditate", 0)}, today, 4, model.Sabbath{})
+	Cal(&buf, cal, "meditate", false)
+	if strings.Contains(buf.String(), RestGlyph) {
+		t.Errorf("rest glyph drawn with sabbath off:\n%s", buf.String())
+	}
+}
+
+func TestStatsShowsTheRestDay(t *testing.T) {
+	var buf bytes.Buffer
+	Stats(&buf, habit("meditate", 0, 1).Stats(today, sundaySabbath), false)
+	out := buf.String()
+	if !strings.Contains(out, "Sabbath") || !strings.Contains(out, "Sunday") {
+		t.Errorf("stats does not report the rest day:\n%s", out)
+	}
+}
+
+func TestStatsOmitsSabbathWhenOff(t *testing.T) {
+	var buf bytes.Buffer
+	Stats(&buf, habit("meditate", 0, 1).Stats(today, model.Sabbath{}), false)
+	if strings.Contains(buf.String(), "Sabbath") {
+		t.Errorf("stats mentions a sabbath that is off:\n%s", buf.String())
+	}
+}
+
 func TestBuildCalCoversWholeWeeks(t *testing.T) {
 	h := habit("meditate", 0, 3)
-	cal := BuildCal([]*model.Habit{h}, today, 4)
+	cal := BuildCal([]*model.Habit{h}, today, 4, model.Sabbath{})
 
 	// Four columns ending with the current week: the grid opens on the Sunday
 	// three weeks before this week's Sunday (2026-08-02).
@@ -119,7 +246,7 @@ func TestBuildCalCountsAcrossHabits(t *testing.T) {
 	a := habit("a", 0)
 	b := habit("b", 0)
 	c := habit("c", 1)
-	cal := BuildCal([]*model.Habit{a, b, c}, today, 1)
+	cal := BuildCal([]*model.Habit{a, b, c}, today, 1, model.Sabbath{})
 
 	byDate := map[string]int{}
 	for _, d := range cal.Days {
@@ -152,7 +279,7 @@ func TestLevel(t *testing.T) {
 
 func TestCalGrid(t *testing.T) {
 	var buf bytes.Buffer
-	cal := BuildCal([]*model.Habit{habit("meditate", 0)}, today, 3)
+	cal := BuildCal([]*model.Habit{habit("meditate", 0)}, today, 3, model.Sabbath{})
 	Cal(&buf, cal, "meditate", false)
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -186,7 +313,7 @@ func TestCalGrid(t *testing.T) {
 // that month starts.
 func TestCalMonthLabels(t *testing.T) {
 	var buf bytes.Buffer
-	cal := BuildCal([]*model.Habit{habit("meditate")}, today, 12)
+	cal := BuildCal([]*model.Habit{habit("meditate")}, today, 12, model.Sabbath{})
 	Cal(&buf, cal, "", false)
 
 	header := strings.Split(buf.String(), "\n")[0]
@@ -215,7 +342,7 @@ func TestStatsOutput(t *testing.T) {
 	h.Tags = []string{"health"}
 
 	var buf bytes.Buffer
-	Stats(&buf, h.Stats(today), false)
+	Stats(&buf, h.Stats(today, model.Sabbath{}), false)
 	out := buf.String()
 
 	for _, want := range []string{"meditate (#1)", "+health", "Current streak", "3 days", "Longest streak", "Best weekday"} {
@@ -227,7 +354,7 @@ func TestStatsOutput(t *testing.T) {
 
 func TestStatsFlagsAtRisk(t *testing.T) {
 	var buf bytes.Buffer
-	Stats(&buf, habit("meditate", 1, 2).Stats(today), false)
+	Stats(&buf, habit("meditate", 1, 2).Stats(today, model.Sabbath{}), false)
 	if !strings.Contains(buf.String(), "not done today") {
 		t.Errorf("at-risk streak not flagged:\n%s", buf.String())
 	}

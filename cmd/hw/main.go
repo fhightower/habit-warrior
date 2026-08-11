@@ -32,9 +32,17 @@ Usage:
   hw archive <habit>               Hide without deleting
   hw unarchive <habit>             Bring back
   hw delete <habit> --force        Delete, completions and all
+  hw config [key] [value]          Show or change settings
 
 Habits are selected by ID, exact name, unique name prefix, or unique substring.
 Dates accept: today, yesterday, 3d, 3 days ago, mon, 2026-08-01.
+
+One day a week is a sabbath: a rest day that neither breaks a streak nor counts
+against a completion rate, marked - in reports. It is Sunday unless you say
+otherwise, and marking a habit done on it always counts.
+
+  hw config sabbath saturday       Rest on Saturday instead
+  hw config sabbath off            No rest day; every day counts
 
 Flags:
   --json          Machine-readable output
@@ -84,11 +92,13 @@ func errorsAs(err error, target *exitError) bool {
 	return false
 }
 
-// options are the flags that apply to every subcommand.
+// options are the settings that apply to every subcommand: the global flags,
+// plus the store configuration resolved once after loading.
 type options struct {
 	jsonOut bool
 	path    string
 	color   bool
+	sabbath model.Sabbath
 }
 
 func run(argv []string, stdout io.Writer) error {
@@ -147,6 +157,7 @@ func run(argv []string, stdout io.Writer) error {
 	if err != nil {
 		return ioErr(err)
 	}
+	opts.sabbath = store.Sabbath()
 
 	cmd, rest := args[0], args[1:]
 	today := hdate.Today()
@@ -174,6 +185,8 @@ func run(argv []string, stdout io.Writer) error {
 		return cmdArchive(stdout, store, opts, rest, today, false)
 	case "delete", "del", "rm":
 		return cmdDelete(stdout, store, opts, rest)
+	case "config":
+		return cmdConfig(stdout, store, opts, rest)
 	default:
 		return userErr("unknown command %q (try: hw --help)", cmd)
 	}
@@ -241,7 +254,7 @@ func save(opts options, store *model.Store) error {
 // emit prints affected habits as JSON, or a plain sentence.
 func emit(stdout io.Writer, opts options, habits []*model.Habit, today hdate.Date, msg string) error {
 	if opts.jsonOut {
-		return writeJSON(stdout, render.BuildRows(habits, today))
+		return writeJSON(stdout, render.BuildRows(habits, today, opts.sabbath))
 	}
 	fmt.Fprintln(stdout, msg)
 	return nil
@@ -365,7 +378,7 @@ func cmdList(stdout io.Writer, store *model.Store, opts options, args []string, 
 	}
 
 	habits := store.Select(filter, all)
-	rows := render.BuildRows(habits, today)
+	rows := render.BuildRows(habits, today, opts.sabbath)
 	if opts.jsonOut {
 		return writeJSON(stdout, rows)
 	}
@@ -412,7 +425,7 @@ func cmdCal(stdout io.Writer, store *model.Store, opts options, args []string, t
 		return userErr("no habits to show")
 	}
 
-	cal := render.BuildCal(habits, today, weeks)
+	cal := render.BuildCal(habits, today, weeks, opts.sabbath)
 	if opts.jsonOut {
 		return writeJSON(stdout, cal)
 	}
@@ -444,7 +457,7 @@ func cmdStats(stdout io.Writer, store *model.Store, opts options, args []string,
 	if opts.jsonOut {
 		out := make([]model.Stats, 0, len(habits))
 		for _, h := range habits {
-			out = append(out, h.Stats(today))
+			out = append(out, h.Stats(today, opts.sabbath))
 		}
 		if len(out) == 1 {
 			return writeJSON(stdout, out[0])
@@ -456,7 +469,7 @@ func cmdStats(stdout io.Writer, store *model.Store, opts options, args []string,
 		if i > 0 {
 			fmt.Fprintln(stdout)
 		}
-		render.Stats(stdout, h.Stats(today), opts.color)
+		render.Stats(stdout, h.Stats(today, opts.sabbath), opts.color)
 	}
 	return nil
 }
@@ -550,6 +563,68 @@ func cmdArchive(stdout io.Writer, store *model.Store, opts options, args []strin
 		msg = fmt.Sprintf("Restored %s", h.Name)
 	}
 	return emit(stdout, opts, []*model.Habit{h}, today, msg)
+}
+
+// configKeys are the settable keys, listed in the order cmdConfig prints them.
+var configKeys = []string{"sabbath"}
+
+// cmdConfig shows or changes store-wide settings. With no arguments it lists
+// every key; with a key it shows one; with a key and a value it sets one.
+func cmdConfig(stdout io.Writer, store *model.Store, opts options, args []string) error {
+	switch len(args) {
+	case 0:
+		return showConfig(stdout, store, opts, configKeys)
+	case 1:
+		key := strings.ToLower(args[0])
+		if err := checkConfigKey(key); err != nil {
+			return err
+		}
+		return showConfig(stdout, store, opts, []string{key})
+	}
+
+	key, value := strings.ToLower(args[0]), strings.Join(args[1:], " ")
+	if err := checkConfigKey(key); err != nil {
+		return err
+	}
+	switch key {
+	case "sabbath":
+		if err := store.SetSabbath(value); err != nil {
+			return userErr("%s", err)
+		}
+	}
+	if err := save(opts, store); err != nil {
+		return err
+	}
+	return showConfig(stdout, store, opts, []string{key})
+}
+
+func checkConfigKey(key string) error {
+	for _, k := range configKeys {
+		if key == k {
+			return nil
+		}
+	}
+	return userErr("unknown setting %q (valid settings: %s)", key, strings.Join(configKeys, ", "))
+}
+
+// showConfig prints the given keys. Values are the resolved settings, not the
+// raw file contents, so an unset key reports the default it actually behaves
+// as rather than a blank.
+func showConfig(stdout io.Writer, store *model.Store, opts options, keys []string) error {
+	values := make(map[string]string, len(keys))
+	for _, k := range keys {
+		switch k {
+		case "sabbath":
+			values[k] = strings.ToLower(store.Sabbath().String())
+		}
+	}
+	if opts.jsonOut {
+		return writeJSON(stdout, values)
+	}
+	for _, k := range keys {
+		fmt.Fprintf(stdout, "%s  %s\n", k, values[k])
+	}
+	return nil
 }
 
 func cmdDelete(stdout io.Writer, store *model.Store, opts options, args []string) error {

@@ -43,12 +43,13 @@ hw stats workout
 
 ```
  ID  Habit        Tags            Today  Streak  Last 30
-  1  workout      health,morning  ✓          12    26/30
-  2  read a book  mind            ·           0    10/30
+  1  workout      health,morning  ✓          12    26/26
+  2  read a book  mind            ·           0    10/26
 ```
 
 A `!` after a streak means it survives only if you do the habit today: the
-count is still running from yesterday.
+count is still running from yesterday. `Last 30` counts the days you could
+have done it, which is fewer than 30 once the weekly rest day is taken out.
 
 ### Selecting habits
 
@@ -67,6 +68,27 @@ hw done out
 
 `today`, `yesterday`, `tomorrow`, `3d`, `3 days ago`, `mon` (the most recent
 Monday), or an ISO date like `2026-08-01`. Future days are refused.
+
+### Sabbath
+
+One day a week is a rest day. It is skipped, not failed: a streak runs straight
+through it, and it does not count against your completion rate. Reports draw it
+as `–` rather than a miss.
+
+```
+hw config                    # sabbath  sunday
+hw config sabbath saturday   # rest on Saturday instead
+hw config sabbath off        # no rest day; every day counts
+hw config sabbath on         # back to the default, Sunday
+```
+
+Sunday is the default. Doing a habit on the rest day is never blocked and
+always counts: the day joins your total and your streak, so a bonus day helps
+and can never push a rate above 100%.
+
+With Sunday resting, a habit done Friday, Saturday, Monday and Tuesday has a
+streak of 4 and a rate of 100%. Turn the sabbath off and the same history is
+two runs of 2 at 80%.
 
 ### Tags
 
@@ -88,6 +110,7 @@ whole group at once.
 | `hw tag <habit> +add -remove` | Change tags |
 | `hw archive` / `hw unarchive <habit>` | Hide without losing history |
 | `hw delete <habit> --force` | Delete, completions and all |
+| `hw config [key] [value]` | Show or change settings |
 
 Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
 
@@ -98,8 +121,11 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "next_id": 2,
+  "config": {
+    "sabbath": "sunday"
+  },
   "habits": [
     {
       "id": 1,
@@ -111,6 +137,12 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
   ]
 }
 ```
+
+`config` appears once you have set something; without it the defaults apply, so
+a file written by an earlier version reads correctly and rests on Sunday.
+`sabbath` is a lowercase weekday name, or `"none"` to disable. Version 2 added
+the key, and an older `hw` will refuse a version 2 file rather than quietly
+ignore a rest day it does not understand.
 
 Writes go through a temporary file and a rename, so an interrupted write cannot
 truncate your history. A file that fails to parse is reported, never

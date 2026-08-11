@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,79 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.NextID != 2 || got.Version != model.Version {
 		t.Errorf("store header = %+v", got)
+	}
+}
+
+func TestConfigSurvivesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+
+	s := model.NewStore()
+	if err := s.SetSabbath("saturday"); err != nil {
+		t.Fatalf("SetSabbath: %v", err)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sab := got.Sabbath(); !sab.On || sab.Day != time.Saturday {
+		t.Errorf("sabbath after round trip = %+v, want Saturday on", sab)
+	}
+}
+
+func TestDisabledSabbathSurvivesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+
+	s := model.NewStore()
+	if err := s.SetSabbath("off"); err != nil {
+		t.Fatalf("SetSabbath: %v", err)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sab := got.Sabbath(); sab.On {
+		t.Errorf("sabbath after round trip = %+v, want off: a disabled setting must not read as unset", sab)
+	}
+}
+
+func TestVersionOneFileLoadsWithTheDefaultSabbath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	const v1 = `{"version":1,"next_id":2,"habits":[{"id":1,"name":"run","created":"2026-08-01","done":["2026-08-01"]}]}`
+	if err := os.WriteFile(path, []byte(v1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load of a version 1 file failed: %v", err)
+	}
+	if len(got.Habits) != 1 {
+		t.Fatalf("loaded %d habits", len(got.Habits))
+	}
+	if sab := got.Sabbath(); !sab.On || sab.Day != model.DefaultSabbath {
+		t.Errorf("sabbath from a version 1 file = %+v, want the default", sab)
+	}
+}
+
+func TestSaveOmitsConfigThatWasNeverSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	if err := Save(path, model.NewStore()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "config") {
+		t.Errorf("an unconfigured store wrote a config key:\n%s", data)
 	}
 }
 

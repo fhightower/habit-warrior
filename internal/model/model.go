@@ -12,8 +12,10 @@ import (
 	"github.com/fhightower/habit-warrior/internal/hdate"
 )
 
-// Version is the on-disk schema version.
-const Version = 1
+// Version is the on-disk schema version. Version 2 added the config object;
+// the bump makes an older binary refuse a file whose sabbath setting it would
+// otherwise ignore, silently reporting the wrong streaks.
+const Version = 2
 
 // Habit is one binary daily habit: on any given day it was done or it wasn't.
 type Habit struct {
@@ -29,6 +31,7 @@ type Habit struct {
 type Store struct {
 	Version int     `json:"version"`
 	NextID  int     `json:"next_id"`
+	Config  *Config `json:"config,omitempty"`
 	Habits  []Habit `json:"habits"`
 }
 
@@ -86,24 +89,45 @@ func (h *Habit) Undo(d hdate.Date) bool {
 // CurrentStreak counts consecutive completed days ending today. A habit done
 // yesterday but not yet today keeps its streak and is reported at risk, so an
 // unfinished morning does not read as a broken streak.
-func (h *Habit) CurrentStreak(today hdate.Date) (n int, atRisk bool) {
+//
+// Rest days are skipped rather than failed: an undone rest day neither adds to
+// the count nor ends it, so a run continues straight through. A rest day that
+// was done anyway counts like any other day. Today being a rest day is never
+// at risk, since there is nothing left to do.
+func (h *Habit) CurrentStreak(today hdate.Date, sab Sabbath) (n int, atRisk bool) {
 	cursor := today
 	if !h.IsDone(cursor) {
-		cursor = cursor.Add(-1)
-		if !h.IsDone(cursor) {
-			return 0, false
+		if sab.Rest(cursor) {
+			cursor = cursor.Add(-1)
+		} else {
+			cursor = cursor.Add(-1)
+			for !h.IsDone(cursor) && sab.Rest(cursor) {
+				cursor = cursor.Add(-1)
+			}
+			if !h.IsDone(cursor) {
+				return 0, false
+			}
+			atRisk = true
 		}
-		atRisk = true
 	}
-	for h.IsDone(cursor) {
-		n++
+	for {
+		switch {
+		case h.IsDone(cursor):
+			n++
+		case sab.Rest(cursor):
+			// Skipped, not counted: the run passes through it.
+		default:
+			return n, atRisk
+		}
 		cursor = cursor.Add(-1)
 	}
-	return n, atRisk
 }
 
-// LongestStreak is the longest run of consecutive days ever completed.
-func (h *Habit) LongestStreak() int {
+// LongestStreak is the longest run of consecutive days ever completed. Two
+// days also count as consecutive when the only day between them is a rest day,
+// which is the historical form of the bridge CurrentStreak walks. Only one
+// weekday ever rests, so a bridgeable gap is always exactly one day wide.
+func (h *Habit) LongestStreak(sab Sabbath) int {
 	best, run := 0, 0
 	var prev hdate.Date
 	for _, s := range h.Done {
@@ -111,7 +135,8 @@ func (h *Habit) LongestStreak() int {
 		if err != nil {
 			continue
 		}
-		if !prev.IsZero() && prev.Add(1).Equal(d) {
+		bridged := sab.On && prev.Add(2).Equal(d) && sab.Rest(prev.Add(1))
+		if !prev.IsZero() && (prev.Add(1).Equal(d) || bridged) {
 			run++
 		} else {
 			run = 1
@@ -124,19 +149,38 @@ func (h *Habit) LongestStreak() int {
 	return best
 }
 
-// CountLast counts completions in the window of days ending today inclusive.
-func (h *Habit) CountLast(today hdate.Date, days int) int {
+// CountLast counts completions in the window of days ending today inclusive,
+// alongside how many days of that window were eligible. Rest days are not
+// eligible unless they were done anyway, which keeps done from ever exceeding
+// eligible.
+func (h *Habit) CountLast(today hdate.Date, days int, sab Sabbath) (done, eligible int) {
 	if days <= 0 {
-		return 0
+		return 0, 0
 	}
 	start := today.Add(-(days - 1))
-	n := 0
 	for _, s := range h.Done {
 		d, err := hdate.ParseISO(s)
 		if err != nil || d.Before(start) || d.After(today) {
 			continue
 		}
-		n++
+		done++
+	}
+	for d := start; !d.After(today); d = d.Add(1) {
+		if !sab.Rest(d) || h.IsDone(d) {
+			eligible++
+		}
+	}
+	return done, eligible
+}
+
+// eligibleDays counts the days from start through today that count toward a
+// completion rate: everything but rest days left undone.
+func (h *Habit) eligibleDays(start, today hdate.Date, sab Sabbath) int {
+	n := 0
+	for d := start; !d.After(today); d = d.Add(1) {
+		if !sab.Rest(d) || h.IsDone(d) {
+			n++
+		}
 	}
 	return n
 }
@@ -148,23 +192,32 @@ type Stats struct {
 	Tags []string `json:"tags"`
 	// Since is the first day the completion rate counts, which is the day the
 	// habit was added unless older days were backfilled.
-	Since       string  `json:"since"`
-	Total       int     `json:"total"`
-	Current     int     `json:"current_streak"`
-	AtRisk      bool    `json:"at_risk"`
-	Longest     int     `json:"longest_streak"`
+	Since   string `json:"since"`
+	Total   int    `json:"total"`
+	Current int    `json:"current_streak"`
+	AtRisk  bool   `json:"at_risk"`
+	Longest int    `json:"longest_streak"`
+	// TrackedDays counts only the days that could have been completed: rest
+	// days are left out unless they were done anyway.
 	TrackedDays int     `json:"tracked_days"`
 	Rate        float64 `json:"rate"`
 	Last7       int     `json:"last_7"`
+	Last7Of     int     `json:"last_7_of"`
 	Last30      int     `json:"last_30"`
+	Last30Of    int     `json:"last_30_of"`
 	Last365     int     `json:"last_365"`
+	Last365Of   int     `json:"last_365_of"`
 	BestWeekday string  `json:"best_weekday"`
 	DoneToday   bool    `json:"done_today"`
+	// Sabbath names the weekly rest day, empty when sabbath mode is off.
+	Sabbath string `json:"sabbath"`
+	// RestToday reports whether today is the rest day.
+	RestToday bool `json:"rest_today"`
 }
 
 // Stats summarizes the habit as of today.
-func (h *Habit) Stats(today hdate.Date) Stats {
-	cur, atRisk := h.CurrentStreak(today)
+func (h *Habit) Stats(today hdate.Date, sab Sabbath) Stats {
+	cur, atRisk := h.CurrentStreak(today, sab)
 	// Backfilling a day older than the habit itself extends the window, so the
 	// completion rate can never exceed 100%.
 	since := h.CreatedDate()
@@ -173,7 +226,7 @@ func (h *Habit) Stats(today hdate.Date) Stats {
 			since = first
 		}
 	}
-	tracked := today.Since(since) + 1
+	tracked := h.eligibleDays(since, today, sab)
 	if tracked < 1 {
 		tracked = 1
 	}
@@ -185,6 +238,9 @@ func (h *Habit) Stats(today hdate.Date) Stats {
 	if tags == nil {
 		tags = []string{}
 	}
+	last7, last7of := h.CountLast(today, 7, sab)
+	last30, last30of := h.CountLast(today, 30, sab)
+	last365, last365of := h.CountLast(today, 365, sab)
 	return Stats{
 		ID:          h.ID,
 		Name:        h.Name,
@@ -193,14 +249,19 @@ func (h *Habit) Stats(today hdate.Date) Stats {
 		Total:       len(h.Done),
 		Current:     cur,
 		AtRisk:      atRisk,
-		Longest:     h.LongestStreak(),
+		Longest:     h.LongestStreak(sab),
 		TrackedDays: tracked,
 		Rate:        rate,
-		Last7:       h.CountLast(today, 7),
-		Last30:      h.CountLast(today, 30),
-		Last365:     h.CountLast(today, 365),
+		Last7:       last7,
+		Last7Of:     last7of,
+		Last30:      last30,
+		Last30Of:    last30of,
+		Last365:     last365,
+		Last365Of:   last365of,
 		BestWeekday: h.bestWeekday(),
 		DoneToday:   h.IsDone(today),
+		Sabbath:     sabbathName(sab),
+		RestToday:   sab.Rest(today),
 	}
 }
 

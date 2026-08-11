@@ -68,7 +68,7 @@ func TestCurrentStreak(t *testing.T) {
 
 	for _, c := range cases {
 		h := habitDoneOn(c.offsets...)
-		got, atRisk := h.CurrentStreak(today)
+		got, atRisk := h.CurrentStreak(today, Sabbath{})
 		if got != c.want || atRisk != c.wantAtRisk {
 			t.Errorf("%s: CurrentStreak = (%d, %v), want (%d, %v)", c.name, got, atRisk, c.want, c.wantAtRisk)
 		}
@@ -87,7 +87,7 @@ func TestLongestStreak(t *testing.T) {
 		{[]int{10, 11, 12, 13, 0}, 4},
 	}
 	for _, c := range cases {
-		if got := habitDoneOn(c.offsets...).LongestStreak(); got != c.want {
+		if got := habitDoneOn(c.offsets...).LongestStreak(Sabbath{}); got != c.want {
 			t.Errorf("LongestStreak(%v) = %d, want %d", c.offsets, got, c.want)
 		}
 	}
@@ -95,29 +95,29 @@ func TestLongestStreak(t *testing.T) {
 
 func TestLongestStreakAcrossMonthBoundary(t *testing.T) {
 	h := &Habit{Done: []string{"2026-07-30", "2026-07-31", "2026-08-01"}}
-	if got := h.LongestStreak(); got != 3 {
+	if got := h.LongestStreak(Sabbath{}); got != 3 {
 		t.Errorf("LongestStreak = %d, want 3 across the month boundary", got)
 	}
 }
 
 func TestCountLast(t *testing.T) {
 	h := habitDoneOn(0, 1, 8, 40)
-	if got := h.CountLast(today, 7); got != 2 {
+	if got, _ := h.CountLast(today, 7, Sabbath{}); got != 2 {
 		t.Errorf("CountLast(7) = %d, want 2", got)
 	}
-	if got := h.CountLast(today, 30); got != 3 {
+	if got, _ := h.CountLast(today, 30, Sabbath{}); got != 3 {
 		t.Errorf("CountLast(30) = %d, want 3", got)
 	}
-	if got := h.CountLast(today, 0); got != 0 {
+	if got, _ := h.CountLast(today, 0, Sabbath{}); got != 0 {
 		t.Errorf("CountLast(0) = %d, want 0", got)
 	}
 	// The window includes its first day: a completion exactly 6 days back is
 	// inside a 7-day window.
 	edge := habitDoneOn(6)
-	if got := edge.CountLast(today, 7); got != 1 {
+	if got, _ := edge.CountLast(today, 7, Sabbath{}); got != 1 {
 		t.Errorf("CountLast(7) at the window edge = %d, want 1", got)
 	}
-	if got := habitDoneOn(7).CountLast(today, 7); got != 0 {
+	if got, _ := habitDoneOn(7).CountLast(today, 7, Sabbath{}); got != 0 {
 		t.Errorf("CountLast(7) just outside the window = %d, want 0", got)
 	}
 }
@@ -125,7 +125,7 @@ func TestCountLast(t *testing.T) {
 func TestStats(t *testing.T) {
 	h := habitDoneOn(0, 1, 2)
 	h.Created = today.Add(-9).String() // ten tracked days
-	s := h.Stats(today)
+	s := h.Stats(today, Sabbath{})
 
 	if s.Total != 3 || s.Current != 3 || s.Longest != 3 {
 		t.Errorf("Stats totals = %+v", s)
@@ -150,7 +150,7 @@ func TestStatsCountsBackfilledDaysBeforeCreation(t *testing.T) {
 	h := habitDoneOn(0, 1, 2, 3)
 	h.Created = today.String() // added today, history typed in afterwards
 
-	s := h.Stats(today)
+	s := h.Stats(today, Sabbath{})
 	if s.Since != today.Add(-3).String() {
 		t.Errorf("Since = %s, want the oldest completion %s", s.Since, today.Add(-3))
 	}
@@ -164,7 +164,7 @@ func TestStatsCountsBackfilledDaysBeforeCreation(t *testing.T) {
 
 func TestStatsOnAnEmptyHabit(t *testing.T) {
 	h := &Habit{Name: "fresh", Created: today.String(), Done: []string{}}
-	s := h.Stats(today)
+	s := h.Stats(today, Sabbath{})
 	if s.Total != 0 || s.Current != 0 || s.Longest != 0 {
 		t.Errorf("Stats = %+v, want zeros", s)
 	}

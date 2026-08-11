@@ -14,6 +14,10 @@ import (
 // Glyphs is the density ramp used by the calendar, from none to full.
 var Glyphs = [5]string{"·", "░", "▒", "▓", "█"}
 
+// RestGlyph marks a weekly rest day that was not done. It is deliberately not
+// part of the density ramp: a rest day is skipped, not a low score.
+const RestGlyph = "–"
+
 const (
 	reset  = "\033[0m"
 	dim    = "\033[2m"
@@ -55,18 +59,25 @@ type ListRow struct {
 	Streak    int      `json:"streak"`
 	AtRisk    bool     `json:"at_risk"`
 	Last30    int      `json:"last_30"`
-	Archived  bool     `json:"archived"`
+	// Last30Of is how many of the last 30 days were eligible, which is fewer
+	// than 30 once rest days are taken out.
+	Last30Of int  `json:"last_30_of"`
+	Archived bool `json:"archived"`
+	// RestToday reports whether today is the rest day, so an unmarked habit
+	// reads as resting rather than missed.
+	RestToday bool `json:"rest_today"`
 }
 
 // BuildRows derives the list report from habits.
-func BuildRows(habits []*model.Habit, today hdate.Date) []ListRow {
+func BuildRows(habits []*model.Habit, today hdate.Date, sab model.Sabbath) []ListRow {
 	rows := make([]ListRow, 0, len(habits))
 	for _, h := range habits {
-		streak, atRisk := h.CurrentStreak(today)
+		streak, atRisk := h.CurrentStreak(today, sab)
 		tags := h.Tags
 		if tags == nil {
 			tags = []string{}
 		}
+		last30, last30of := h.CountLast(today, 30, sab)
 		rows = append(rows, ListRow{
 			ID:        h.ID,
 			Name:      h.Name,
@@ -74,8 +85,10 @@ func BuildRows(habits []*model.Habit, today hdate.Date) []ListRow {
 			DoneToday: h.IsDone(today),
 			Streak:    streak,
 			AtRisk:    atRisk,
-			Last30:    h.CountLast(today, 30),
+			Last30:    last30,
+			Last30Of:  last30of,
 			Archived:  h.Archived,
+			RestToday: sab.Rest(today),
 		})
 	}
 	return rows
@@ -96,8 +109,11 @@ func List(w io.Writer, rows []ListRow, color bool) {
 			name += " (archived)"
 		}
 		mark := Glyphs[0]
-		if r.DoneToday {
+		switch {
+		case r.DoneToday:
 			mark = "✓"
+		case r.RestToday:
+			mark = RestGlyph
 		}
 		streak := fmt.Sprintf("%d", r.Streak)
 		if r.AtRisk && r.Streak > 0 {
@@ -109,7 +125,7 @@ func List(w io.Writer, rows []ListRow, color bool) {
 			strings.Join(r.Tags, ","),
 			mark,
 			streak,
-			fmt.Sprintf("%d/30", r.Last30),
+			fmt.Sprintf("%d/%d", r.Last30, r.Last30Of),
 		})
 	}
 
@@ -152,7 +168,11 @@ func List(w io.Writer, rows []ListRow, color bool) {
 	}
 
 	if color {
-		fmt.Fprintln(w, paint("  ! streak survives only if done today", dim, color))
+		note := "  ! streak survives only if done today"
+		if len(rows) > 0 && rows[0].RestToday {
+			note += fmt.Sprintf("   %s rest day", RestGlyph)
+		}
+		fmt.Fprintln(w, paint(note, dim, color))
 	}
 }
 
@@ -161,6 +181,9 @@ func List(w io.Writer, rows []ListRow, color bool) {
 type CalDay struct {
 	Date  string `json:"date"`
 	Count int    `json:"count"`
+	// Rest marks a weekly rest day, so a consumer can tell an intentional gap
+	// from a missed day.
+	Rest bool `json:"rest,omitempty"`
 }
 
 // Calendar is the heatmap data: every day from Start (a Sunday) through End
@@ -178,7 +201,7 @@ type Calendar struct {
 // BuildCal collects completions for the last weeks weeks, ending today. The
 // range starts on the Sunday that begins the earliest week shown, so the grid
 // has whole columns.
-func BuildCal(habits []*model.Habit, today hdate.Date, weeks int) Calendar {
+func BuildCal(habits []*model.Habit, today hdate.Date, weeks int, sab model.Sabbath) Calendar {
 	if weeks < 1 {
 		weeks = 1
 	}
@@ -201,7 +224,7 @@ func BuildCal(habits []*model.Habit, today hdate.Date, weeks int) Calendar {
 				n++
 			}
 		}
-		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n})
+		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n, Rest: sab.Rest(d)})
 	}
 	return cal
 }
@@ -241,8 +264,14 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 	}
 
 	counts := make(map[string]int, len(cal.Days))
+	rest := make(map[string]bool, len(cal.Days))
+	anyRest := false
 	for _, d := range cal.Days {
 		counts[d.Date] = d.Count
+		if d.Rest {
+			rest[d.Date] = true
+			anyRest = true
+		}
 	}
 
 	if title != "" {
@@ -290,7 +319,15 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 				line.WriteString("  ")
 				continue
 			}
-			lv := level(counts[d.String()], cal.Habits)
+			key := d.String()
+			// A rest day nobody worked shows as rest; one that was done anyway
+			// keeps its density, since the work really happened.
+			if rest[key] && counts[key] == 0 {
+				line.WriteString(paint(RestGlyph, dim, color))
+				line.WriteString(" ")
+				continue
+			}
+			lv := level(counts[key], cal.Habits)
 			line.WriteString(paint(Glyphs[lv], levelColors[lv], color))
 			line.WriteString(" ")
 		}
@@ -304,6 +341,11 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 		legend.WriteString(" ")
 	}
 	legend.WriteString("More")
+	if anyRest {
+		legend.WriteString("   ")
+		legend.WriteString(paint(RestGlyph, dim, color))
+		legend.WriteString(" rest")
+	}
 	fmt.Fprintln(w, paint(legend.String(), dim, color))
 }
 
@@ -320,8 +362,11 @@ func Stats(w io.Writer, s model.Stats, color bool) {
 		streak = paint(streak+" (not done today)", yellow, color)
 	}
 	todayMark := paint("no", dim, color)
-	if s.DoneToday {
+	switch {
+	case s.DoneToday:
 		todayMark = paint("yes", levelColors[4], color)
+	case s.RestToday:
+		todayMark = paint("rest day", dim, color)
 	}
 
 	rows := [][2]string{
@@ -329,11 +374,14 @@ func Stats(w io.Writer, s model.Stats, color bool) {
 		{"Current streak", streak},
 		{"Longest streak", fmt.Sprintf("%d days", s.Longest)},
 		{"Completed", fmt.Sprintf("%d of %d days (%.0f%%)", s.Total, s.TrackedDays, s.Rate*100)},
-		{"Last 7 days", fmt.Sprintf("%d", s.Last7)},
-		{"Last 30 days", fmt.Sprintf("%d", s.Last30)},
-		{"Last 365 days", fmt.Sprintf("%d", s.Last365)},
+		{"Last 7 days", fmt.Sprintf("%d of %d", s.Last7, s.Last7Of)},
+		{"Last 30 days", fmt.Sprintf("%d of %d", s.Last30, s.Last30Of)},
+		{"Last 365 days", fmt.Sprintf("%d of %d", s.Last365, s.Last365Of)},
 		{"Best weekday", orDash(s.BestWeekday)},
 		{"Tracking since", s.Since},
+	}
+	if s.Sabbath != "" {
+		rows = append(rows, [2]string{"Sabbath", s.Sabbath + " (rested, not counted)"})
 	}
 	labelWidth := 0
 	for _, r := range rows {

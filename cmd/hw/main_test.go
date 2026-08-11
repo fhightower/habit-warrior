@@ -89,6 +89,10 @@ func TestAddListDoneFlow(t *testing.T) {
 
 func TestDoneAcceptsHumanDates(t *testing.T) {
 	c := newCLI(t)
+	// This test is about parsing dates, not resting: with the default sabbath
+	// on, whether the two-day gap below is bridged would depend on the weekday
+	// the suite happens to run.
+	c.ok("config", "sabbath", "off")
 	c.ok("add", "meditate")
 	c.ok("done", "meditate", "yesterday")
 	c.ok("done", "meditate", "3", "days", "ago")
@@ -378,6 +382,140 @@ func TestUserErrorsExitWithCodeOne(t *testing.T) {
 	var ee exitError
 	if !errorsAs(err, &ee) || ee.code != 1 {
 		t.Errorf("exit code = %+v, want 1", err)
+	}
+}
+
+// TestSabbathBridgesAStreakEndToEnd pins the rest day to the weekday two days
+// back, so the same completions are tested against a rest day and an ordinary
+// day no matter which day the suite runs on.
+func TestSabbathBridgesAStreakEndToEnd(t *testing.T) {
+	now := hdate.Today()
+	restDay := now.Add(-2)
+
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("done", "meditate", now.Add(-1).String())
+	c.ok("done", "meditate", now.Add(-3).String())
+
+	c.ok("config", "sabbath", restDay.Weekday().String())
+	var bridged map[string]any
+	unmarshal(t, c.ok("stats", "meditate", "--json"), &bridged)
+	if bridged["current_streak"].(float64) != 2 {
+		t.Errorf("streak across the rest day = %v, want 2", bridged["current_streak"])
+	}
+
+	c.ok("config", "sabbath", "off")
+	var broken map[string]any
+	unmarshal(t, c.ok("stats", "meditate", "--json"), &broken)
+	if broken["current_streak"].(float64) != 1 {
+		t.Errorf("streak with sabbath off = %v, want 1", broken["current_streak"])
+	}
+}
+
+func TestDoneOnTheSabbathIsAllowedAndCounts(t *testing.T) {
+	now := hdate.Today()
+
+	c := newCLI(t)
+	c.ok("add", "meditate")
+	c.ok("config", "sabbath", now.Add(-1).Weekday().String())
+	c.ok("done", "meditate", now.Add(-1).String())
+	c.ok("done", "meditate")
+
+	var stats map[string]any
+	unmarshal(t, c.ok("stats", "meditate", "--json"), &stats)
+	if stats["total"].(float64) != 2 {
+		t.Errorf("total = %v, want 2: a rest day marked done is still recorded", stats["total"])
+	}
+	if stats["current_streak"].(float64) != 2 {
+		t.Errorf("streak = %v, want 2: a rest day done anyway counts", stats["current_streak"])
+	}
+}
+
+func TestConfigShowsDefaults(t *testing.T) {
+	c := newCLI(t)
+	out := c.ok("config")
+	if !strings.Contains(out, "sabbath") || !strings.Contains(strings.ToLower(out), "sunday") {
+		t.Errorf("config listing does not report the default sabbath:\n%s", out)
+	}
+}
+
+func TestConfigSetsAndReadsBackSabbath(t *testing.T) {
+	c := newCLI(t)
+	if out := c.ok("config", "sabbath", "sat"); !strings.Contains(strings.ToLower(out), "saturday") {
+		t.Errorf("setting sabbath to sat reported %q", out)
+	}
+	// The setting survives the process boundary, i.e. it was written to disk.
+	if out := c.ok("config", "sabbath"); !strings.Contains(strings.ToLower(out), "saturday") {
+		t.Errorf("sabbath did not persist, got %q", out)
+	}
+}
+
+func TestConfigDisablesAndReenablesSabbath(t *testing.T) {
+	c := newCLI(t)
+	if out := c.ok("config", "sabbath", "off"); !strings.Contains(strings.ToLower(out), "off") {
+		t.Errorf("disabling reported %q", out)
+	}
+	if out := c.ok("config", "sabbath"); !strings.Contains(strings.ToLower(out), "off") {
+		t.Errorf("sabbath did not stay off, got %q", out)
+	}
+	if out := c.ok("config", "sabbath", "on"); !strings.Contains(strings.ToLower(out), "sunday") {
+		t.Errorf("re-enabling did not restore the default day, got %q", out)
+	}
+}
+
+func TestConfigRejectsBadKeysAndValues(t *testing.T) {
+	c := newCLI(t)
+	if msg := c.fails("config", "sabatical", "sunday"); !strings.Contains(msg, "sabbath") {
+		t.Errorf("unknown key error does not list the valid keys: %q", msg)
+	}
+	if msg := c.fails("config", "sabbath", "someday"); !strings.Contains(msg, "weekday") {
+		t.Errorf("bad value error = %q", msg)
+	}
+}
+
+func TestConfigJSON(t *testing.T) {
+	c := newCLI(t)
+	c.ok("config", "sabbath", "monday")
+	var cfg map[string]any
+	unmarshal(t, c.ok("config", "--json"), &cfg)
+	if cfg["sabbath"] != "monday" {
+		t.Errorf("config --json sabbath = %v, want monday", cfg["sabbath"])
+	}
+}
+
+func TestConfigLeavesHabitsIntact(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "meditate", "+calm")
+	c.ok("done", "meditate")
+	c.ok("config", "sabbath", "friday")
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	if len(rows) != 1 || rows[0].Name != "meditate" || !rows[0].DoneToday {
+		t.Errorf("writing config disturbed the habits: %+v", rows)
+	}
+}
+
+func TestHelpDocumentsEveryCommand(t *testing.T) {
+	c := newCLI(t)
+	out := c.ok("--help")
+
+	// Only the command list counts: prose further down mentions commands too,
+	// and a command missing from the list is exactly the bug being guarded.
+	_, after, ok := strings.Cut(out, "Usage:\n")
+	if !ok {
+		t.Fatalf("help has no Usage section:\n%s", out)
+	}
+	list, _, _ := strings.Cut(after, "\n\n")
+
+	for _, cmd := range []string{"add", "done", "undo", "list", "cal", "stats",
+		"rename", "tag", "archive", "unarchive", "delete", "config"} {
+		if !strings.Contains(list, "  hw "+cmd+" ") {
+			t.Errorf("the command list does not include hw %s:\n%s", cmd, list)
+		}
+	}
+	if !strings.Contains(out, "sabbath") {
+		t.Errorf("help does not explain the sabbath:\n%s", out)
 	}
 }
 
