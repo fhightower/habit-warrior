@@ -486,40 +486,11 @@ func TestUndoUnmarksSeveralHabitsAtOnce(t *testing.T) {
 	}
 }
 
-func TestSplitTrailingNote(t *testing.T) {
-	cases := []struct {
-		name     string
-		sel      []string
-		wantSel  []string
-		wantNote string
-	}{
-		{"phrase after a habit is a note", []string{"workout", "3 x max pullups"},
-			[]string{"workout"}, "3 x max pullups"},
-		{"phrase after several habits is a note", []string{"1", "2", "did both"},
-			[]string{"1", "2"}, "did both"},
-		// A quoted name is how a habit with spaces is selected, so a lone
-		// phrase has to stay a selector.
-		{"a lone phrase is a selector", []string{"read a book"},
-			[]string{"read a book"}, ""},
-		{"bare words stay selectors", []string{"10", "11", "12"},
-			[]string{"10", "11", "12"}, ""},
-		{"single habit, no note", []string{"workout"}, []string{"workout"}, ""},
-		{"nothing", nil, nil, ""},
-	}
-	for _, c := range cases {
-		sel, note := splitTrailingNote(c.sel, 1)
-		if strings.Join(sel, "|") != strings.Join(c.wantSel, "|") || note != c.wantNote {
-			t.Errorf("%s: splitTrailingNote(%v) = (%v, %q), want (%v, %q)",
-				c.name, c.sel, sel, note, c.wantSel, c.wantNote)
-		}
-	}
-}
-
 func TestDoneAttachesANote(t *testing.T) {
 	c := newCLI(t)
 	c.ok("add", "workout")
 
-	out := c.ok("done", "workout", "3 x max pullups")
+	out := c.ok("done", "workout", "--note", "3 x max pullups")
 	if !strings.Contains(out, "3 x max pullups") {
 		t.Errorf("done output = %q, want the note echoed back", out)
 	}
@@ -537,12 +508,56 @@ func TestDoneAttachesANote(t *testing.T) {
 	}
 }
 
+// A note has one spelling: --note. A trailing phrase is a habit selector like
+// any other argument, so a stray one is an error rather than a silent note.
+func TestPositionalPhraseIsNotANote(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+
+	if msg := c.fails("done", "workout", "3 x max pullups"); !strings.Contains(msg, "neither a habit nor a date") {
+		t.Errorf("error = %q, want the phrase refused as a selector", msg)
+	}
+
+	var rows []render.ListRow
+	unmarshal(t, c.ok("list", "--json"), &rows)
+	if rows[0].DoneToday {
+		t.Error("the failed command marked the habit anyway")
+	}
+}
+
+func TestNoteFlagPositionDoesNotMatter(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout")
+	c.ok("add", "stretch")
+
+	// Before the habits, between them, and after the date.
+	for i, args := range [][]string{
+		{"done", "--note", "one", "workout"},
+		{"done", "workout", "--note=two", "stretch"},
+		{"done", "workout", "stretch", "yesterday", "--note", "three"},
+	} {
+		if _, err := c.run(args...); err != nil {
+			t.Errorf("case %d: hw %s: %v", i, strings.Join(args, " "), err)
+		}
+	}
+
+	var stats map[string]any
+	unmarshal(t, c.ok("stats", "workout", "--json"), &stats)
+	notes, _ := stats["notes"].(map[string]any)
+	if got := notes[hdate.Today().String()]; got != "two" {
+		t.Errorf("today's note = %v, want two", got)
+	}
+	if got := notes[hdate.Today().Add(-1).String()]; got != "three" {
+		t.Errorf("yesterday's note = %v, want three", got)
+	}
+}
+
 func TestDoneNoteOnAGivenDayAndSeveralHabits(t *testing.T) {
 	c := newCLI(t)
 	c.ok("add", "workout")
 	c.ok("add", "stretch")
 
-	c.ok("done", "workout", "stretch", "felt strong", "yesterday")
+	c.ok("done", "workout", "stretch", "yesterday", "--note", "felt strong")
 
 	for _, name := range []string{"workout", "stretch"} {
 		var stats map[string]any
@@ -554,6 +569,23 @@ func TestDoneNoteOnAGivenDayAndSeveralHabits(t *testing.T) {
 		}
 		if got := notes[hdate.Today().Add(-1).String()]; got != "felt strong" {
 			t.Errorf("%s note = %v, want it on yesterday", name, got)
+		}
+	}
+}
+
+func TestDoneNoteByTag(t *testing.T) {
+	c := newCLI(t)
+	c.ok("add", "workout", "+morning")
+	c.ok("add", "stretch", "+morning")
+
+	c.ok("done", "+morning", "--note", "morning routine")
+
+	for _, name := range []string{"workout", "stretch"} {
+		var stats map[string]any
+		unmarshal(t, c.ok("stats", name, "--json"), &stats)
+		notes, _ := stats["notes"].(map[string]any)
+		if got := notes[hdate.Today().String()]; got != "morning routine" {
+			t.Errorf("%s note = %v, want the note applied across the filter", name, got)
 		}
 	}
 }
@@ -575,10 +607,10 @@ func TestDoneWithNoteFlagAcceptsASingleWord(t *testing.T) {
 func TestDoneUpdatesAnExistingNote(t *testing.T) {
 	c := newCLI(t)
 	c.ok("add", "workout")
-	c.ok("done", "workout", "first try")
+	c.ok("done", "workout", "--note", "first try")
 
 	// The day is already done, but the note changed, so this is not "no change".
-	out := c.ok("done", "workout", "second try")
+	out := c.ok("done", "workout", "--note", "second try")
 	if strings.Contains(out, "No change") {
 		t.Errorf("re-noting an already-done day reported no change: %q", out)
 	}
@@ -607,9 +639,9 @@ func TestQuotedHabitNameIsStillASelector(t *testing.T) {
 func TestUndoRejectsANote(t *testing.T) {
 	c := newCLI(t)
 	c.ok("add", "workout")
-	c.ok("done", "workout", "3 x max pullups")
+	c.ok("done", "workout", "--note", "3 x max pullups")
 
-	if msg := c.fails("undo", "workout", "some note"); !strings.Contains(msg, "note") {
+	if msg := c.fails("undo", "workout", "--note", "some note"); !strings.Contains(msg, "note") {
 		t.Errorf("undo with a note = %q, want it refused", msg)
 	}
 }
@@ -617,7 +649,7 @@ func TestUndoRejectsANote(t *testing.T) {
 func TestStatsShowsNotes(t *testing.T) {
 	c := newCLI(t)
 	c.ok("add", "workout")
-	c.ok("done", "workout", "3 x max pullups")
+	c.ok("done", "workout", "--note", "3 x max pullups")
 
 	out := c.ok("stats", "workout")
 	if !strings.Contains(out, "3 x max pullups") {

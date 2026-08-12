@@ -35,6 +35,7 @@ hw done workout yesterday    # backfill
 hw done read 3 days ago
 hw done 10 11 12             # several at once
 hw done workout read mon     # several, on a given day
+hw done workout --note "3 x max pullups"
 hw done +morning              # everything tagged morning
 
 hw list
@@ -91,19 +92,17 @@ bare word is otherwise its own selector.
 
 ### Notes
 
-A quoted phrase after the habits is a note on that completion:
+`--note` attaches a note to the completions a `done` command records:
 
 ```
-hw done workout "3 x max pullups"
-hw done workout stretch "felt strong" yesterday
-hw done workout --note tired
+hw done workout --note "3 x max pullups"
+hw done workout stretch yesterday --note "felt strong"
+hw done +morning --note "did the whole routine"
 ```
 
-A phrase counts as a note only once a habit has been named, so `hw done "read a
-book"` still selects that habit rather than writing a note about nothing. Bare
-words are always selectors, which is what keeps a mistyped habit an error
-instead of a silent note; `--note` covers the one-word case that has no
-unambiguous spelling otherwise.
+The flag can go anywhere in the command, and applies to every habit that `done`
+marks. Notes have no positional form: every bare argument is a habit selector,
+which is what keeps a mistyped habit an error rather than a silent note.
 
 Re-noting a day you had already marked replaces the text. `hw undo` discards
 the note along with the completion it described, and refuses a note of its own.
@@ -148,7 +147,7 @@ whole group at once.
 | `hw` | Table of habits, same as `hw list` |
 | `hw help` | Print the help message |
 | `hw add <name> [+tag...]` | Start tracking a habit |
-| `hw done <habit...\|+tag> [date] ["note"]` | Mark done, one habit or several |
+| `hw done <habit...\|+tag> [date] [--note "..."]` | Mark done, one habit or several |
 | `hw undo <habit...\|+tag> [date]` | Unmark |
 | `hw list [+tag] [-tag] [--all]` | Daily score, then habits, streaks, last 30 days |
 | `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |

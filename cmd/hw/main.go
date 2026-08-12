@@ -23,7 +23,7 @@ const usage = `hw - habit warrior, a tracker for daily habits
 Usage:
   hw                               Table of habits (same as hw list)
   hw add <name> [+tag...]          Start tracking a habit
-  hw done <habit...|+tag> [date] ["note"]  Mark done (default: today)
+  hw done <habit...|+tag> [date]   Mark done (default: today)
   hw undo <habit...|+tag> [date]   Unmark
   hw list [+tag] [-tag] [--all]    Table of habits, streaks, last 30 days
   hw cal [habit] [+tag] [--weeks N]  Heatmap (default: 26 weeks)
@@ -38,11 +38,10 @@ Usage:
 Habits are selected by ID, exact name, unique name prefix, or unique substring.
 Dates accept: today, yesterday, 3d, 3 days ago, mon, 2026-08-01.
 
-A quoted phrase after the habits is a note on that completion, and --note
-takes one that happens to be a single word:
+--note attaches a note to the completions a done command records:
 
-  hw done workout "3 x max pullups"
-  hw done workout --note tired
+  hw done workout --note "3 x max pullups"
+  hw done workout stretch yesterday --note "felt strong"
 
 One day a week is a sabbath: a rest day that neither breaks a streak nor counts
 against a completion rate, marked - in reports. It is Sunday unless you say
@@ -320,27 +319,6 @@ func splitTrailingDate(args []string, today hdate.Date, keep int) ([]string, hda
 	return args, today
 }
 
-// splitTrailingNote peels a note off the end of the habit selectors.
-//
-// A note is an argument carrying spaces, which the shell only produces when it
-// was quoted, and only once a habit has already been named. Requiring an
-// earlier selector is what keeps hw done "read a book" selecting that habit
-// rather than writing a note about nothing, and requiring spaces is what keeps
-// a mistyped one-word habit an error instead of a silent note.
-//
-// A one-word note has no unambiguous spelling here, so --note carries those.
-// keep has the same meaning as in splitTrailingDate.
-func splitTrailingNote(args []string, keep int) ([]string, string) {
-	if len(args) <= keep {
-		return args, ""
-	}
-	last := args[len(args)-1]
-	if !strings.ContainsAny(last, " \t") {
-		return args, ""
-	}
-	return args[:len(args)-1], strings.TrimSpace(last)
-}
-
 // resolve turns selectors into habits, in the order given and without
 // repeats, failing on the first one that does not name exactly one habit and
 // reporting its position. Resolving everything up front keeps a command that
@@ -385,16 +363,10 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 	day := today
 	if filter.Empty() {
 		if len(rest) == 0 {
-			return userErr("usage: hw %s <habit...|+tag> [date] [\"note\"]", verb)
+			return userErr("usage: hw %s <habit...|+tag> [date]", verb)
 		}
 		var selectors []string
 		selectors, day = splitTrailingDate(rest, today, 1)
-		if note == "" {
-			selectors, note = splitTrailingNote(selectors, 1)
-			if !done && note != "" {
-				return userErr("undo does not take a note: a note describes a completion")
-			}
-		}
 		var bad int
 		if targets, bad, err = resolve(store, selectors); err != nil {
 			// Anything after the first argument could have been meant as a
@@ -412,15 +384,9 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 			return userErr("no habits match that filter")
 		}
 		// The filter has already named the habits, so what follows is at most a
-		// date and a note. Anything else is a leftover habit name, which lands
-		// in the error below rather than being ignored.
+		// date. Anything else is a leftover habit name, which lands in the
+		// error below rather than being ignored.
 		rest, day = splitTrailingDate(rest, today, 0)
-		if note == "" {
-			rest, note = splitTrailingNote(rest, 0)
-			if !done && note != "" {
-				return userErr("undo does not take a note: a note describes a completion")
-			}
-		}
 		if len(rest) > 0 {
 			return userErr("give a habit or tag filters, not both")
 		}
