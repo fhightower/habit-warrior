@@ -38,6 +38,10 @@ hw done workout read mon     # several, on a given day
 hw done workout --note "3 x max pullups"
 hw done +morning              # everything tagged morning
 
+hw skip workout              # today off, no penalty
+hw skip workout 2026-08-20..2026-08-27
+hw unskip workout
+
 hw list
 hw list +health -evening
 hw cal --weeks 12
@@ -52,13 +56,16 @@ hw stats workout
 ```
 
 The headline is the day so far: how many of your habits are done, as a
-percentage and as raw counts. Archived habits are left out, and on the weekly
-rest day it reads `Rest day` instead, since nothing is due and 0% would be a
-strange way to describe a day off.
+percentage and as raw counts. Archived habits are left out, as is any habit
+resting today, which is not due and so cannot be behind. When nothing at all is
+due it reads `Rest day` instead, since 0% would be a strange way to describe a
+day off.
 
-What is still left to do comes first, then what is done, then anything
-archived; within each group the habits stay in ID order. On the rest day
-nothing is due, so the table stays in plain ID order. `--json` is unaffected
+What is still left to do comes first, then everything settled — done, or
+resting today — then anything archived; within each group the habits stay in ID
+order. A habit you skipped is not due, so it sinks out of the way with the
+finished ones rather than sitting at the top as work you owe. On a day nothing
+at all is due the whole table stays in plain ID order. `--json` is unaffected
 and always lists habits by ID.
 
 A `!` after a streak means it survives only if you do the habit today: the
@@ -116,13 +123,27 @@ the note along with the completion it described, and refuses a note of its own.
 ### Dates
 
 `today`, `yesterday`, `tomorrow`, `3d`, `3 days ago`, `mon` (the most recent
-Monday), or an ISO date like `2026-08-01`. Future days are refused.
+Monday), or an ISO date like `2026-08-01`. For days still to come, `next mon`
+and `in 3 days`. A bare weekday always looks backwards; `next` is how you reach
+the coming one. `next mon` is never today and never more than a week out, so on
+a Tuesday `next mon..next fri` runs backwards and is refused — reach for
+`in N days` or ISO dates when a range has to span a weekend.
 
-### Sabbath
+`done` and `undo` refuse a day that has not happened yet. `skip` and `unskip`
+take one, and also take a range written `from..to`.
 
-One day a week is a rest day. It is skipped, not failed: a streak runs straight
-through it, and it does not count against your completion rate. Reports draw it
-as `–` rather than a miss.
+### Rest days
+
+A habit rests on a day when it neither has to be done nor counts as missed. A
+rest day is skipped, not failed: a streak runs straight through it, and it stays
+out of your completion rate. Reports draw it as `–` rather than a miss.
+
+Rest comes from two places — a weekly sabbath that applies to everything, and a
+skip you take on one habit for one stretch of days.
+
+#### Sabbath
+
+One day a week is a rest day for every habit.
 
 ```
 hw config                    # sabbath  sunday
@@ -139,6 +160,34 @@ With Sunday resting, a habit done Friday, Saturday, Monday and Tuesday has a
 streak of 4 and a rate of 100%. Turn the sabbath off and the same history is
 two runs of 2 at 80%.
 
+#### Skipping days
+
+`hw skip` takes days off one habit — for a habit you never meant to do daily,
+or for a week you are away. Skipped days rest exactly as the sabbath does.
+
+```
+hw skip workout                          # today
+hw skip workout yesterday
+hw skip workout 2026-08-20..2026-08-27   # a range, endpoints included
+hw skip workout tomorrow..in 7 days      # days that have not arrived yet
+hw skip workout next mon                 # the coming Monday
+hw skip +health tomorrow                 # everything tagged health
+hw unskip workout 2026-08-22             # back on
+```
+
+Booking time off in advance is the ordinary case, so future days are allowed;
+streaks and rates never look past today, so a day booked ahead simply waits
+until it arrives. One command covers at most 366 days, which catches a mistyped
+year before it writes one.
+
+A day cannot be both done and off. Marking a skipped day done clears the skip —
+you did it, and that is the truth about the day. Skipping a day already done is
+refused, naming the days in the way, so a mistyped range cannot quietly discard
+logged history: `hw undo` those days first.
+
+`hw stats` reports how many days a habit has had off, and `hw list` shows a
+resting habit as `–` for the day.
+
 ### Tags
 
 `+tag` requires a tag, `-tag` excludes one, and several combine with AND.
@@ -154,6 +203,8 @@ whole group at once.
 | `hw add <name> [+tag...]` | Start tracking a habit |
 | `hw done <habit...\|+tag> [date] [--note "..."]` | Mark done, one habit or several |
 | `hw undo <habit...\|+tag> [date]` | Unmark |
+| `hw skip <habit...\|+tag> [date\|from..to]` | Take days off, no penalty |
+| `hw unskip <habit...\|+tag> [date\|from..to]` | Put days back on |
 | `hw list [+tag] [-tag] [--all]` | Daily score, then habits (unfinished first), streaks, last 30 days |
 | `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |
 | `hw stats [habit] [+tag]` | Streaks, rates, best weekday |
@@ -172,7 +223,7 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "next_id": 2,
   "config": {
     "sabbath": "sunday"
@@ -184,6 +235,7 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
       "tags": ["health", "morning"],
       "created": "2026-05-11",
       "done": ["2026-08-06", "2026-08-07"],
+      "skipped": ["2026-08-20", "2026-08-21"],
       "notes": {"2026-08-07": "3 x max pullups"}
     }
   ]
@@ -193,12 +245,16 @@ Global flags: `--json`, `--data <path>`, `--no-color`, `--version`, `--help`.
 `config` appears once you have set something; without it the defaults apply, so
 a file written by an earlier version reads correctly and rests on Sunday.
 `sabbath` is a lowercase weekday name, or `"none"` to disable. `notes` appears
-only on habits that have one, keyed by the day it describes.
+only on habits that have one, keyed by the day it describes. `skipped` is the
+days that habit has off, sorted like `done` and appearing only when there are
+some.
 
 Each schema version exists so an older `hw` refuses the file rather than
 mishandling it: version 2 added `config`, which an older build would ignore
-while reporting the wrong streaks, and version 3 added `notes`, which it would
-drop on its next write.
+while reporting the wrong streaks, version 3 added `notes`, which it would drop
+on its next write, and version 4 added `skipped`, which it would ignore while
+reporting exactly the missed days and broken streaks the skip was taken to
+avoid.
 
 Writes go through a temporary file and a rename, so an interrupted write cannot
 truncate your history. A file that fails to parse is reported, never

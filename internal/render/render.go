@@ -65,8 +65,9 @@ type ListRow struct {
 	// than 30 once rest days are taken out.
 	Last30Of int  `json:"last_30_of"`
 	Archived bool `json:"archived"`
-	// RestToday reports whether today is the rest day, so an unmarked habit
-	// reads as resting rather than missed.
+	// RestToday reports whether the habit is resting today, whether from the
+	// weekly sabbath or a skip, so an unmarked habit reads as resting rather
+	// than missed.
 	RestToday bool `json:"rest_today"`
 }
 
@@ -90,7 +91,7 @@ func BuildRows(habits []*model.Habit, today hdate.Date, sab model.Sabbath) []Lis
 			Last30:    last30,
 			Last30Of:  last30of,
 			Archived:  h.Archived,
-			RestToday: sab.Rest(today),
+			RestToday: h.Rests(today, sab),
 		})
 	}
 	return rows
@@ -100,25 +101,36 @@ func BuildRows(habits []*model.Habit, today hdate.Date, sab model.Sabbath) []Lis
 type Score struct {
 	Done  int
 	Total int
-	// Rest reports that today is the weekly rest day, when nothing is due and
-	// a percentage would read as a failing grade rather than a day off.
+	// Rest reports that no habit is due today, when a percentage would read as
+	// a failing grade rather than a day off.
 	Rest bool
 }
 
 // BuildScore summarizes the rows. Archived habits are left out: they are not
 // being tracked, so they cannot be behind.
+//
+// A habit resting today is not due and leaves the denominator, unless it was
+// done anyway, which keeps a bonus day inside the total it is counted in.
 func BuildScore(rows []ListRow) Score {
 	var s Score
+	tracked := 0
+	resting := 0
 	for _, r := range rows {
 		if r.Archived {
 			continue
 		}
-		s.Total++
+		tracked++
 		if r.DoneToday {
 			s.Done++
 		}
-		s.Rest = r.RestToday
+		if r.RestToday {
+			resting++
+		}
+		if !r.RestToday || r.DoneToday {
+			s.Total++
+		}
 	}
+	s.Rest = tracked > 0 && resting == tracked
 	return s
 }
 
@@ -181,9 +193,11 @@ func scoreLine(s Score, color bool) string {
 // rank orders a row into one of three groups: what is still left to do today,
 // what is settled, and what is no longer tracked.
 //
-// A rest day settles everything, since nothing is due: an unmarked habit is
-// resting, not behind. An archived habit sinks whether or not it was marked,
-// for the same reason it is left out of the score.
+// A habit resting today is settled rather than behind, since it is not due:
+// that covers a day off it was skipped for as much as the weekly sabbath, and
+// it is the same reason rest leaves the score's denominator. An archived habit
+// sinks whether or not it was marked, for the same reason it is left out of
+// the score entirely.
 func rank(r ListRow) int {
 	switch {
 	case r.Archived:
@@ -212,7 +226,9 @@ func List(w io.Writer, rows []ListRow, color bool) {
 		return
 	}
 
-	if score := BuildScore(rows); score.Total > 0 {
+	// A day where everything rests has no total to show, but is exactly the day
+	// the headline most needs to say so.
+	if score := BuildScore(rows); score.Total > 0 || score.Rest {
 		fmt.Fprintln(w, scoreLine(score, color))
 	}
 
@@ -287,8 +303,13 @@ func List(w io.Writer, rows []ListRow, color bool) {
 
 	if color {
 		note := "  ! streak survives only if done today"
-		if len(rows) > 0 && rows[0].RestToday {
-			note += fmt.Sprintf("   %s rest day", RestGlyph)
+		// Any habit resting earns the legend: rest is now per habit, so the
+		// glyph can appear on one row while the rest of the table is ordinary.
+		for _, r := range rows {
+			if r.RestToday {
+				note += fmt.Sprintf("   %s resting today", RestGlyph)
+				break
+			}
 		}
 		fmt.Fprintln(w, paint(note, dim, color))
 	}
@@ -299,8 +320,13 @@ func List(w io.Writer, rows []ListRow, color bool) {
 type CalDay struct {
 	Date  string `json:"date"`
 	Count int    `json:"count"`
-	// Rest marks a weekly rest day, so a consumer can tell an intentional gap
-	// from a missed day.
+	// Of is how many of the habits were due that day: the ones that were not
+	// resting, plus any that rested and were done anyway. It is the denominator
+	// behind Count, and is smaller than the habit total on a day some of them
+	// had off.
+	Of int `json:"of"`
+	// Rest marks a day no habit was due, so a consumer can tell an intentional
+	// gap from a missed day.
 	Rest bool `json:"rest,omitempty"`
 }
 
@@ -336,13 +362,17 @@ func BuildCal(habits []*model.Habit, today hdate.Date, weeks int, sab model.Sabb
 		end:    today,
 	}
 	for d := start; !d.After(today); d = d.Add(1) {
-		n := 0
+		n, of := 0, 0
 		for _, h := range habits {
-			if h.IsDone(d) {
+			done := h.IsDone(d)
+			if done {
 				n++
 			}
+			if !h.Rests(d, sab) || done {
+				of++
+			}
 		}
-		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n, Rest: sab.Rest(d)})
+		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n, Of: of, Rest: of == 0})
 	}
 	return cal
 }
@@ -382,10 +412,12 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 	}
 
 	counts := make(map[string]int, len(cal.Days))
+	due := make(map[string]int, len(cal.Days))
 	rest := make(map[string]bool, len(cal.Days))
 	anyRest := false
 	for _, d := range cal.Days {
 		counts[d.Date] = d.Count
+		due[d.Date] = d.Of
 		if d.Rest {
 			rest[d.Date] = true
 			anyRest = true
@@ -445,7 +477,9 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 				line.WriteString(" ")
 				continue
 			}
-			lv := level(counts[key], cal.Habits)
+			// The denominator is the habits due that day, not every habit: a
+			// day two of three had off is full when the third one was done.
+			lv := level(counts[key], due[key])
 			line.WriteString(paint(Glyphs[lv], levelColors[lv], color))
 			line.WriteString(" ")
 		}
@@ -497,6 +531,9 @@ func Stats(w io.Writer, s model.Stats, color bool) {
 		{"Last 365 days", fmt.Sprintf("%d of %d", s.Last365, s.Last365Of)},
 		{"Best weekday", orDash(s.BestWeekday)},
 		{"Tracking since", s.Since},
+	}
+	if s.Skipped > 0 {
+		rows = append(rows, [2]string{"Skipped", fmt.Sprintf("%d days (taken off, not counted)", s.Skipped)})
 	}
 	if s.Sabbath != "" {
 		rows = append(rows, [2]string{"Sabbath", s.Sabbath + " (rested, not counted)"})

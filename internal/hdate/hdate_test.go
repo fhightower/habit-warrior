@@ -45,6 +45,89 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// Forward forms exist so a day off can be booked before it arrives. A bare
+// weekday keeps pointing at the most recent one, which is what done relies on.
+func TestParseForwardForms(t *testing.T) {
+	// A Thursday.
+	today := New(2026, time.August, 6)
+
+	cases := []struct {
+		in   string
+		want Date
+	}{
+		{"next mon", New(2026, time.August, 10)},
+		{"next monday", New(2026, time.August, 10)},
+		{"NEXT Fri", New(2026, time.August, 7)},
+		{"next thu", New(2026, time.August, 13)}, // today is a Thursday: the coming one, not today
+		{"in 3 days", New(2026, time.August, 9)},
+		{"in 1 day", New(2026, time.August, 7)},
+		{"in 0 days", today},
+		{"  in   2 days  ", New(2026, time.August, 8)},
+	}
+
+	for _, c := range cases {
+		got, err := Parse(c.in, today)
+		if err != nil {
+			t.Errorf("Parse(%q) returned error: %v", c.in, err)
+			continue
+		}
+		if !got.Equal(c.want) {
+			t.Errorf("Parse(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseRange(t *testing.T) {
+	today := New(2026, time.August, 6)
+
+	cases := []struct {
+		in         string
+		start, end Date
+	}{
+		{"2026-08-20..2026-08-27", New(2026, time.August, 20), New(2026, time.August, 27)},
+		{"2026-08-20 .. 2026-08-27", New(2026, time.August, 20), New(2026, time.August, 27)},
+		{"3 days ago..today", New(2026, time.August, 3), today},
+		{"today..next mon", today, New(2026, time.August, 10)},
+		{"2026-08-20..2026-08-20", New(2026, time.August, 20), New(2026, time.August, 20)},
+		// A lone date is a range of one day, so callers have a single shape.
+		{"tomorrow", New(2026, time.August, 7), New(2026, time.August, 7)},
+		{"2026-08-01", New(2026, time.August, 1), New(2026, time.August, 1)},
+	}
+
+	for _, c := range cases {
+		start, end, err := ParseRange(c.in, today)
+		if err != nil {
+			t.Errorf("ParseRange(%q) returned error: %v", c.in, err)
+			continue
+		}
+		if !start.Equal(c.start) || !end.Equal(c.end) {
+			t.Errorf("ParseRange(%q) = %s..%s, want %s..%s", c.in, start, end, c.start, c.end)
+		}
+	}
+}
+
+func TestParseRangeRejects(t *testing.T) {
+	today := New(2026, time.August, 6)
+	cases := []struct {
+		in  string
+		why string
+	}{
+		{"2026-08-27..2026-08-20", "backwards range"},
+		{"..today", "missing start"},
+		{"today..", "missing end"},
+		{"..", "no dates at all"},
+		{"someday..today", "unparsable start"},
+		{"today..someday", "unparsable end"},
+		{"a..b..c", "more than two endpoints"},
+		{"", "empty"},
+	}
+	for _, c := range cases {
+		if start, end, err := ParseRange(c.in, today); err == nil {
+			t.Errorf("ParseRange(%q) = %s..%s, want an error (%s)", c.in, start, end, c.why)
+		}
+	}
+}
+
 func TestParseRejectsGarbage(t *testing.T) {
 	today := New(2026, time.August, 6)
 	for _, in := range []string{"", "   ", "someday", "2026-13-01", "-3", "d", "many days ago", "2026/08/01"} {

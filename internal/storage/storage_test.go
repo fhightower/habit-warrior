@@ -51,6 +51,76 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// Version 4 added skipped days. A version 3 binary would ignore them and
+// report the missed days and broken streaks they were taken to avoid, so it
+// has to refuse the file instead.
+func TestSkipsBumpTheSchemaVersion(t *testing.T) {
+	if model.Version != 4 {
+		t.Errorf("model.Version = %d, want 4", model.Version)
+	}
+}
+
+func TestSkippedDaysSurviveRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	today := hdate.New(2026, time.August, 6)
+
+	s := model.NewStore()
+	h, _ := s.Add("run", nil, today)
+	h.Skip(today)
+	h.Skip(today.Add(-1))
+
+	if err := Save(path, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	loaded := got.Habits[0]
+	if len(loaded.Skipped) != 2 || !loaded.IsSkipped(today) {
+		t.Errorf("round trip lost skipped days: %+v", loaded.Skipped)
+	}
+}
+
+// A habit with nothing skipped writes no skipped key at all, so the file stays
+// as small and readable as it was before skips existed.
+func TestNoSkippedKeyWhenNothingIsSkipped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	s := model.NewStore()
+	s.Add("run", nil, hdate.New(2026, time.August, 6))
+	if err := Save(path, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "skipped") {
+		t.Errorf("file mentions skipped with nothing skipped:\n%s", data)
+	}
+}
+
+// A file written before skips existed loads with none, and the zero value has
+// to behave as "nothing skipped" rather than panicking on a nil slice.
+func TestVersionThreeFileLoadsWithNoSkips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "habits.json")
+	const v3 = `{"version":3,"next_id":2,"habits":[{"id":1,"name":"run","created":"2026-08-01","done":["2026-08-01"]}]}`
+	if err := os.WriteFile(path, []byte(v3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load of a version 3 file failed: %v", err)
+	}
+	h := &got.Habits[0]
+	if h.IsSkipped(hdate.New(2026, time.August, 1)) {
+		t.Error("a version 3 file came back with a skipped day")
+	}
+	if !h.Skip(hdate.New(2026, time.August, 2)) {
+		t.Error("Skip on a habit loaded without skips reported no change")
+	}
+}
+
 func TestConfigSurvivesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "habits.json")
 
