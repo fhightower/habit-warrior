@@ -30,6 +30,24 @@ func TestBuildRowsMarksASkippedHabitAsResting(t *testing.T) {
 	}
 }
 
+func TestListSinksASkippedHabitBelowTheUnfinishedOnes(t *testing.T) {
+	// A day off is not work you owe, so it belongs with the settled habits even
+	// though it carries the same bare mark as one you have yet to get to.
+	off := skipped(habit("read"), 0)
+	pending := habit("meditate")
+	pending.ID = 2
+	done := habit("stretch", 0)
+	done.ID = 3
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{off, pending, done}, today, model.Sabbath{}), false)
+
+	got := strings.Join(habitOrder(buf.String()), ",")
+	if want := "meditate,read,stretch"; got != want {
+		t.Errorf("order = %q, want %q: a skipped habit is resting, not behind", got, want)
+	}
+}
+
 func TestListDrawsSkippedHabitWithTheRestGlyph(t *testing.T) {
 	off := skipped(habit("read"), 0)
 	on := habit("meditate", 0)

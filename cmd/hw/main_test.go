@@ -67,12 +67,11 @@ func TestAddListDoneFlow(t *testing.T) {
 
 	c.ok("done", "meditate")
 	out = c.ok("list")
-	// Skip the score headline above the table.
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")[1:]
-	if !strings.Contains(lines[1], "✓") {
+	// Completing a habit moves its row, so find each one by name.
+	if line := listRow(out, "meditate"); !strings.Contains(line, "✓") {
 		t.Errorf("meditate not marked done:\n%s", out)
 	}
-	if strings.Contains(lines[2], "✓") {
+	if line := listRow(out, "read a book"); strings.Contains(line, "✓") {
 		t.Errorf("the wrong habit was marked done:\n%s", out)
 	}
 
@@ -874,6 +873,17 @@ func unmarshal(t *testing.T, data string, v any) {
 	if err := json.Unmarshal([]byte(data), v); err != nil {
 		t.Fatalf("bad JSON: %v\n%s", err, data)
 	}
+}
+
+// listRow returns the line of list output naming the habit, empty when there
+// is none.
+func listRow(out, name string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, name) {
+			return l
+		}
+	}
+	return ""
 }
 
 func rowNames(rows []render.ListRow) []string {

@@ -190,6 +190,35 @@ func scoreLine(s Score, color bool) string {
 		paint(fmt.Sprintf("%d of %d today", s.Done, s.Total), dim, color))
 }
 
+// rank orders a row into one of three groups: what is still left to do today,
+// what is settled, and what is no longer tracked.
+//
+// A habit resting today is settled rather than behind, since it is not due:
+// that covers a day off it was skipped for as much as the weekly sabbath, and
+// it is the same reason rest leaves the score's denominator. An archived habit
+// sinks whether or not it was marked, for the same reason it is left out of
+// the score entirely.
+func rank(r ListRow) int {
+	switch {
+	case r.Archived:
+		return 2
+	case !r.DoneToday && !r.RestToday:
+		return 0
+	default:
+		return 1
+	}
+}
+
+// order returns the rows to print: what is left to do first, then the rest,
+// each group still in the order it arrived. The caller's slice is left alone,
+// so JSON consumers keep the ID ordering they were given.
+func order(rows []ListRow) []ListRow {
+	sorted := make([]ListRow, len(rows))
+	copy(sorted, rows)
+	sort.SliceStable(sorted, func(i, j int) bool { return rank(sorted[i]) < rank(sorted[j]) })
+	return sorted
+}
+
 // List writes the habit table.
 func List(w io.Writer, rows []ListRow, color bool) {
 	if len(rows) == 0 {
@@ -202,6 +231,8 @@ func List(w io.Writer, rows []ListRow, color bool) {
 	if score := BuildScore(rows); score.Total > 0 || score.Rest {
 		fmt.Fprintln(w, scoreLine(score, color))
 	}
+
+	rows = order(rows)
 
 	headers := []string{"ID", "Habit", "Tags", "Today", "Streak", "Last 30"}
 	cells := make([][]string, 0, len(rows))
