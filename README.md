@@ -47,14 +47,19 @@ hw stats workout
 ```
   50%  ██████████░░░░░░░░░░  1 of 2 today
  ID  Habit        Tags            Today  Streak      Last 30
-  1  workout      health,morning  ✓          12  26/26 (100%)
   2  read a book  mind            ·           0   10/26 (38%)
+  1  workout      health,morning  ✓          12  26/26 (100%)
 ```
 
 The headline is the day so far: how many of your habits are done, as a
 percentage and as raw counts. Archived habits are left out, and on the weekly
 rest day it reads `Rest day` instead, since nothing is due and 0% would be a
 strange way to describe a day off.
+
+What is still left to do comes first, then what is done, then anything
+archived; within each group the habits stay in ID order. On the rest day
+nothing is due, so the table stays in plain ID order. `--json` is unaffected
+and always lists habits by ID.
 
 A `!` after a streak means it survives only if you do the habit today: the
 count is still running from yesterday. `Last 30` counts the days you could
@@ -149,7 +154,7 @@ whole group at once.
 | `hw add <name> [+tag...]` | Start tracking a habit |
 | `hw done <habit...\|+tag> [date] [--note "..."]` | Mark done, one habit or several |
 | `hw undo <habit...\|+tag> [date]` | Unmark |
-| `hw list [+tag] [-tag] [--all]` | Daily score, then habits, streaks, last 30 days |
+| `hw list [+tag] [-tag] [--all]` | Daily score, then habits (unfinished first), streaks, last 30 days |
 | `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |
 | `hw stats [habit] [+tag]` | Streaks, rates, best weekday |
 | `hw rename <habit> <new name>` | Rename |

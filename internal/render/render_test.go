@@ -34,12 +34,13 @@ func TestListMarksTodayAndStreak(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("want a header and two rows, got:\n%s", out)
 	}
-	if !strings.Contains(lines[1], "✓") || !strings.Contains(lines[1], "health") {
-		t.Errorf("done row = %q", lines[1])
+	// Rows are ordered by what is left to do, so find each one by name.
+	if row := rowFor(out, "meditate"); !strings.Contains(row, "✓") || !strings.Contains(row, "health") {
+		t.Errorf("done row = %q", row)
 	}
 	// The second habit was done yesterday but not today: streak survives, flagged.
-	if !strings.Contains(lines[2], "2!") {
-		t.Errorf("at-risk row = %q, want the streak marked with !", lines[2])
+	if row := rowFor(out, "read"); !strings.Contains(row, "2!") {
+		t.Errorf("at-risk row = %q, want the streak marked with !", row)
 	}
 	if strings.Contains(out, "\033[") {
 		t.Error("color escapes leaked into uncolored output")
@@ -64,9 +65,10 @@ func TestListColumnsLineUpWithWideGlyphs(t *testing.T) {
 			lines[1], len(first), lines[2], len(second))
 	}
 	// The marker sits at the same offset on both rows.
-	markerCol := indexRune(lines[1], '✓')
-	if markerCol < 0 || markerCol != indexRune(lines[2], '·') {
-		t.Errorf("marker column drifted: ✓ at %d, · at %d", markerCol, indexRune(lines[2], '·'))
+	doneRow, pendingRow := rowFor(buf.String(), "a"), rowFor(buf.String(), "bbbbbbb")
+	markerCol := indexRune(doneRow, '✓')
+	if markerCol < 0 || markerCol != indexRune(pendingRow, '·') {
+		t.Errorf("marker column drifted: ✓ at %d, · at %d", markerCol, indexRune(pendingRow, '·'))
 	}
 }
 
@@ -80,6 +82,16 @@ func tableLines(out string) []string {
 		}
 	}
 	return lines
+}
+
+// rowFor returns the table row for the named habit, empty when there is none.
+func rowFor(out, name string) string {
+	for _, l := range tableLines(out)[1:] { // skip the header
+		if f := strings.Fields(l); len(f) > 1 && f[1] == name {
+			return l
+		}
+	}
+	return ""
 }
 
 // indexRune reports the display column of the first occurrence of r.
@@ -279,6 +291,85 @@ func TestListColumnsLineUpWithTheRestGlyph(t *testing.T) {
 	restCol := indexRune(lines[2], []rune(RestGlyph)[0])
 	if markerCol < 0 || markerCol != restCol {
 		t.Errorf("marker column drifted: ✓ at %d, rest at %d", markerCol, restCol)
+	}
+}
+
+// habitOrder returns the habit names down the table, in the order listed.
+func habitOrder(out string) []string {
+	lines := tableLines(out)
+	names := make([]string, 0, len(lines))
+	for _, l := range lines[1:] { // skip the header
+		f := strings.Fields(l)
+		if len(f) < 2 {
+			continue
+		}
+		names = append(names, f[1])
+	}
+	return names
+}
+
+func TestListPutsUnresolvedHabitsFirst(t *testing.T) {
+	done := habit("meditate", 0, 1)
+	pending := habit("read", 1)
+	pending.ID = 2
+	alsoDone := habit("stretch", 0)
+	alsoDone.ID = 3
+	stillPending := habit("walk")
+	stillPending.ID = 4
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{done, pending, alsoDone, stillPending}, today, model.Sabbath{}), false)
+
+	got := strings.Join(habitOrder(buf.String()), ",")
+	if want := "read,walk,meditate,stretch"; got != want {
+		t.Errorf("order = %q, want %q: what is left to do comes first, ID order within each group", got, want)
+	}
+}
+
+func TestListPutsArchivedHabitsLast(t *testing.T) {
+	// Archived and unmarked, which would sort it first if archiving were ignored.
+	archived := habit("old")
+	archived.Archived = true
+	pending := habit("read")
+	pending.ID = 2
+	done := habit("meditate", 0)
+	done.ID = 3
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{archived, pending, done}, today, model.Sabbath{}), false)
+
+	got := strings.Join(habitOrder(buf.String()), ",")
+	if want := "read,meditate,old"; got != want {
+		t.Errorf("order = %q, want %q: an archived habit is not being tracked, so it cannot be behind", got, want)
+	}
+}
+
+func TestListKeepsIDOrderOnARestDay(t *testing.T) {
+	restDay := hdate.New(2026, time.August, 2)
+	done := &model.Habit{ID: 1, Name: "a", Created: restDay.Add(-30).String(), Done: []string{}}
+	done.MarkDone(restDay)
+	resting := &model.Habit{ID: 2, Name: "b", Created: restDay.Add(-30).String(), Done: []string{}}
+
+	var buf bytes.Buffer
+	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), false)
+
+	got := strings.Join(habitOrder(buf.String()), ",")
+	if want := "a,b"; got != want {
+		t.Errorf("order = %q, want %q: nothing is due on a rest day, so an unmarked habit is not unresolved", got, want)
+	}
+}
+
+func TestListDoesNotReorderTheCallersRows(t *testing.T) {
+	done := habit("meditate", 0)
+	pending := habit("read")
+	pending.ID = 2
+	rows := BuildRows([]*model.Habit{done, pending}, today, model.Sabbath{})
+
+	var buf bytes.Buffer
+	List(&buf, rows, false)
+
+	if rows[0].Name != "meditate" || rows[1].Name != "read" {
+		t.Errorf("List reordered the caller's slice: %q then %q", rows[0].Name, rows[1].Name)
 	}
 }
 
