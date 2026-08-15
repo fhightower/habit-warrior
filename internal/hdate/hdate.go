@@ -66,6 +66,12 @@ func (d Date) Since(o Date) int {
 //	2026-08-01
 //	3d, 3 days ago, 3d ago
 //	mon, monday (the most recent Monday, today included)
+//	next mon, next monday (the coming Monday, never today)
+//	in 3 days, in 1 day
+//
+// A bare weekday looks backwards and "next" looks forwards, which keeps the
+// short form meaning what it always has while still giving a way to name a day
+// that has not arrived.
 func Parse(s string, today Date) (Date, error) {
 	norm := strings.ToLower(strings.Join(strings.Fields(s), " "))
 	if norm == "" {
@@ -89,12 +95,52 @@ func Parse(s string, today Date) (Date, error) {
 		return today.Add(-n), nil
 	}
 
+	if n, ok := parseDaysAhead(norm); ok {
+		return today.Add(n), nil
+	}
+
+	if d, ok := parseNextWeekday(norm, today); ok {
+		return d, nil
+	}
+
 	if wd, ok := ParseWeekday(norm); ok {
 		back := (int(today.Weekday()) - int(wd) + 7) % 7
 		return today.Add(-back), nil
 	}
 
 	return Date{}, fmt.Errorf("cannot understand date %q", s)
+}
+
+// RangeSep separates the two endpoints of a date range.
+const RangeSep = ".."
+
+// ParseRange reads a range of days: two dates around "..", or a lone date,
+// which is a range of one day so that callers have a single shape to work
+// with. Endpoints go through Parse, so anything a single date accepts works on
+// either side. A backwards range is an error rather than a silently swapped
+// one: it more often means a typo than an intention.
+func ParseRange(s string, today Date) (start, end Date, err error) {
+	if !strings.Contains(s, RangeSep) {
+		d, err := Parse(s, today)
+		if err != nil {
+			return Date{}, Date{}, err
+		}
+		return d, d, nil
+	}
+	parts := strings.Split(s, RangeSep)
+	if len(parts) != 2 {
+		return Date{}, Date{}, fmt.Errorf("a range is two dates around %q, got %q", RangeSep, s)
+	}
+	if start, err = Parse(parts[0], today); err != nil {
+		return Date{}, Date{}, fmt.Errorf("range start: %w", err)
+	}
+	if end, err = Parse(parts[1], today); err != nil {
+		return Date{}, Date{}, fmt.Errorf("range end: %w", err)
+	}
+	if end.Before(start) {
+		return Date{}, Date{}, fmt.Errorf("range %s..%s ends before it starts", start, end)
+	}
+	return start, end, nil
 }
 
 // parseDaysAgo reads "3d", "3d ago", "3 days ago" and friends.
@@ -111,6 +157,43 @@ func parseDaysAgo(s string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// parseDaysAhead reads "in 3 days", "in 1 day". The "in" is required: a bare
+// "3 days" already means three days ago.
+func parseDaysAhead(s string) (int, bool) {
+	rest, ok := strings.CutPrefix(s, "in ")
+	if !ok {
+		return 0, false
+	}
+	for _, suffix := range []string{" days", " day", "days", "day", "d"} {
+		if num, ok := strings.CutSuffix(strings.TrimSpace(rest), suffix); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(num))
+			if err != nil || n < 0 {
+				return 0, false
+			}
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// parseNextWeekday reads "next mon", "next monday": the coming weekday, which
+// is a week out when today already is that day.
+func parseNextWeekday(s string, today Date) (Date, bool) {
+	rest, ok := strings.CutPrefix(s, "next ")
+	if !ok {
+		return Date{}, false
+	}
+	wd, ok := ParseWeekday(rest)
+	if !ok {
+		return Date{}, false
+	}
+	ahead := (int(wd) - int(today.Weekday()) + 7) % 7
+	if ahead == 0 {
+		ahead = 7
+	}
+	return today.Add(ahead), true
 }
 
 var weekdays = map[string]time.Weekday{

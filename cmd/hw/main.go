@@ -25,6 +25,8 @@ Usage:
   hw add <name> [+tag...]          Start tracking a habit
   hw done <habit...|+tag> [date]   Mark done (default: today)
   hw undo <habit...|+tag> [date]   Unmark
+  hw skip <habit...|+tag> [days]   Take days off, no penalty
+  hw unskip <habit...|+tag> [days] Put days back on
   hw list [+tag] [-tag] [--all]    Table of habits, streaks, last 30 days
   hw cal [habit] [+tag] [--weeks N]  Heatmap (default: 26 weeks)
   hw stats [habit] [+tag]          Streaks and completion rates
@@ -36,7 +38,17 @@ Usage:
   hw config [key] [value]          Show or change settings
 
 Habits are selected by ID, exact name, unique name prefix, or unique substring.
-Dates accept: today, yesterday, 3d, 3 days ago, mon, 2026-08-01.
+Dates accept: today, yesterday, 3d, 3 days ago, mon, 2026-08-01, and for days
+still to come, tomorrow, next mon, in 3 days.
+
+skip takes a day off a single habit: it neither breaks a streak nor counts
+against a completion rate, exactly as the weekly sabbath does. It takes a range
+as well as a day, and days that have not arrived yet, so time off can be booked
+in advance. A day that is already done is not a day off: undo it first.
+
+  hw skip workout                  Today off
+  hw skip workout 2026-08-20..2026-08-27
+  hw skip +health tomorrow..in 7 days
 
 --note attaches a note to the completions a done command records:
 
@@ -180,6 +192,10 @@ func run(argv []string, stdout io.Writer) error {
 		return cmdMark(stdout, store, opts, rest, today, true)
 	case "undo":
 		return cmdMark(stdout, store, opts, rest, today, false)
+	case "skip":
+		return cmdSkip(stdout, store, opts, rest, today, true)
+	case "unskip":
+		return cmdSkip(stdout, store, opts, rest, today, false)
 	case "list", "ls":
 		return cmdList(stdout, store, opts, rest, today)
 	case "cal", "calendar":
@@ -438,6 +454,163 @@ func cmdMark(stdout io.Writer, store *model.Store, opts options, args []string, 
 		msg += fmt.Sprintf("\n  %s", note)
 	}
 	return emit(stdout, opts, targets, today, msg)
+}
+
+// maxSkipDays caps how many days one command can take off. A range longer than
+// a year is far more often a mistyped date than an intention, and writing it
+// out would bury the file in entries.
+const maxSkipDays = 366
+
+// splitTrailingRange divides positional arguments into habit selectors and an
+// optional trailing range of days, as splitTrailingDate does for a single day.
+// A lone date is a range of one, so callers have a single shape to work with.
+//
+// Anything holding the range separator is read as a range even when it fails to
+// parse: no habit is named with "..", so reporting the date problem is more
+// use than saying the habit cannot be found.
+func splitTrailingRange(args []string, today hdate.Date, keep int) ([]string, hdate.Date, hdate.Date, error) {
+	for k := keep; k < len(args); k++ {
+		joined := strings.Join(args[k:], " ")
+		start, end, err := hdate.ParseRange(joined, today)
+		if err == nil {
+			return args[:k], start, end, nil
+		}
+		if strings.Contains(joined, hdate.RangeSep) {
+			return nil, hdate.Date{}, hdate.Date{}, userErr("%s", err)
+		}
+	}
+	return args, today, today, nil
+}
+
+// describeRange names the days a command covered.
+func describeRange(start, end, today hdate.Date) string {
+	if start.Equal(end) {
+		if start.Equal(today) {
+			return "today"
+		}
+		return start.String()
+	}
+	return fmt.Sprintf("%s..%s (%d days)", start, end, end.Since(start)+1)
+}
+
+// cmdSkip handles both skip and unskip, over one day or a range of them, for
+// any number of habits or every habit matching a tag filter.
+//
+// Future days are allowed, which is the point: time off is usually known in
+// advance. Streaks and rates never look past today, so a day booked off ahead
+// simply waits there until it arrives.
+func cmdSkip(stdout io.Writer, store *model.Store, opts options, args []string, today hdate.Date, skip bool) error {
+	verb := "skip"
+	if !skip {
+		verb = "unskip"
+	}
+
+	args, note, err := takeValue(args, "--note")
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		return userErr("%s does not take a note: a note describes a completion", verb)
+	}
+
+	filter, rest := model.ParseArgs(args)
+
+	var targets []*model.Habit
+	start, end := today, today
+	if filter.Empty() {
+		if len(rest) == 0 {
+			return userErr("usage: hw %s <habit...|+tag> [date|from..to]", verb)
+		}
+		var selectors []string
+		if selectors, start, end, err = splitTrailingRange(rest, today, 1); err != nil {
+			return err
+		}
+		var bad int
+		if targets, bad, err = resolve(store, selectors); err != nil {
+			if bad > 0 {
+				return userErr("%q is neither a habit nor a date", strings.Join(selectors[bad:], " "))
+			}
+			return userErr("%s", err)
+		}
+	} else {
+		targets = store.Select(filter, false)
+		if len(targets) == 0 {
+			return userErr("no habits match that filter")
+		}
+		if rest, start, end, err = splitTrailingRange(rest, today, 0); err != nil {
+			return err
+		}
+		if len(rest) > 0 {
+			return userErr("give a habit or tag filters, not both")
+		}
+	}
+
+	if days := end.Since(start) + 1; days > maxSkipDays {
+		return userErr("that is %d days off; %d is the most one command takes", days, maxSkipDays)
+	}
+
+	if skip {
+		if err := refuseDoneDays(targets, start, end); err != nil {
+			return err
+		}
+	}
+
+	changed := 0
+	for _, h := range targets {
+		for d := start; !d.After(end); d = d.Add(1) {
+			moved := h.Unskip(d)
+			if skip {
+				moved = h.Skip(d)
+			}
+			if moved {
+				changed++
+			}
+		}
+	}
+
+	if changed > 0 {
+		if err := save(opts, store); err != nil {
+			return err
+		}
+	}
+
+	names := make([]string, len(targets))
+	for i, h := range targets {
+		names[i] = h.Name
+	}
+	when := describeRange(start, end, today)
+	action := "Skipped"
+	if !skip {
+		action = "Unskipped"
+	}
+	msg := fmt.Sprintf("%s %s: %s", action, when, strings.Join(names, ", "))
+	if changed == 0 {
+		msg = fmt.Sprintf("No change for %s: %s", when, strings.Join(names, ", "))
+	}
+	return emit(stdout, opts, targets, today, msg)
+}
+
+// refuseDoneDays reports the completions a skip would sit on top of. A day that
+// was done is not a day off, and taking the whole command down rather than part
+// of it keeps a mistyped range from quietly rewriting logged history.
+func refuseDoneDays(targets []*model.Habit, start, end hdate.Date) error {
+	var clashes []string
+	for _, h := range targets {
+		for d := start; !d.After(end); d = d.Add(1) {
+			if h.IsDone(d) {
+				clashes = append(clashes, fmt.Sprintf("%s on %s", h.Name, d))
+			}
+		}
+	}
+	if len(clashes) == 0 {
+		return nil
+	}
+	shown, more := clashes, ""
+	if len(shown) > 3 {
+		shown, more = shown[:3], fmt.Sprintf(" and %d more", len(clashes)-3)
+	}
+	return userErr("already done: %s%s; hw undo those days first, or skip others",
+		strings.Join(shown, ", "), more)
 }
 
 func cmdList(stdout io.Writer, store *model.Store, opts options, args []string, today hdate.Date) error {
