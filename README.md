@@ -44,6 +44,7 @@ hw unskip workout
 
 hw list
 hw list +health -evening
+hw list yesterday            # the day as it stood then
 hw cal --weeks 12
 hw stats workout
 ```
@@ -74,6 +75,31 @@ have done it, which is fewer than 30 once the weekly rest day is taken out.
 
 Neither percentage rounds past the truth: a day with anything still to do
 cannot show 100%, and a day with anything done cannot show 0%.
+
+### Looking back at a day
+
+`list` takes a date, and reports that day as it stood rather than today:
+
+```
+hw list yesterday
+hw list +health mon
+hw list 2026-08-01
+```
+
+```
+ Monday 2026-08-17
+  50%  ██████████░░░░░░░░░░  1 of 2 done
+ ID  Habit        Tags            Done  Streak      Last 30
+```
+
+Everything is counted backwards from the day shown and no further forward, so
+the streak, the score and `Last 30` are what they were then, not a trimmed view
+of now. A day still to come is refused: there is nothing behind it to count.
+
+A `!` still means the streak survives only if that day gets done, because it
+can be: `hw done <habit> <date>` backfills. In `--json` every row carries a
+`date` field naming the day it describes, and the fields that say today —
+`done_today`, `rest_today` — are about that day.
 
 ### Selecting habits
 
@@ -129,8 +155,8 @@ the coming one. `next mon` is never today and never more than a week out, so on
 a Tuesday `next mon..next fri` runs backwards and is refused — reach for
 `in N days` or ISO dates when a range has to span a weekend.
 
-`done` and `undo` refuse a day that has not happened yet. `skip` and `unskip`
-take one, and also take a range written `from..to`.
+`done`, `undo` and `list` refuse a day that has not happened yet. `skip` and
+`unskip` take one, and also take a range written `from..to`.
 
 ### Rest days
 
@@ -205,7 +231,7 @@ whole group at once.
 | `hw undo <habit...\|+tag> [date]` | Unmark |
 | `hw skip <habit...\|+tag> [date\|from..to]` | Take days off, no penalty |
 | `hw unskip <habit...\|+tag> [date\|from..to]` | Put days back on |
-| `hw list [+tag] [-tag] [--all]` | Daily score, then habits (unfinished first), streaks, last 30 days |
+| `hw list [+tag] [-tag] [date] [--all]` | Daily score, then habits (unfinished first), streaks, last 30 days |
 | `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |
 | `hw stats [habit] [+tag]` | Streaks, rates, best weekday |
 | `hw rename <habit> <new name>` | Rename |

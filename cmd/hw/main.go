@@ -27,7 +27,7 @@ Usage:
   hw undo <habit...|+tag> [date]   Unmark
   hw skip <habit...|+tag> [days]   Take days off, no penalty
   hw unskip <habit...|+tag> [days] Put days back on
-  hw list [+tag] [-tag] [--all]    Table of habits, streaks, last 30 days
+  hw list [+tag] [-tag] [date]     Table of habits, streaks, last 30 days
   hw cal [habit] [+tag] [--weeks N]  Heatmap (default: 26 weeks)
   hw stats [habit] [+tag]          Streaks and completion rates
   hw rename <habit> <new name>     Rename
@@ -49,6 +49,14 @@ in advance. A day that is already done is not a day off: undo it first.
   hw skip workout                  Today off
   hw skip workout 2026-08-20..2026-08-27
   hw skip +health tomorrow..in 7 days
+
+list takes a date, which reports the day as it stood then rather than today.
+Streaks and rates are counted backwards from that day, so a day still to come
+is refused. --all adds archived habits.
+
+  hw list yesterday
+  hw list +health mon
+  hw list 2026-08-01
 
 --note attaches a note to the completions a done command records:
 
@@ -613,19 +621,28 @@ func refuseDoneDays(targets []*model.Habit, start, end hdate.Date) error {
 		strings.Join(shown, ", "), more)
 }
 
+// cmdList shows the habit table for one day, which is today unless a trailing
+// date names an earlier one. Since list takes no habit selectors, nothing has
+// to survive in front of the date and every argument is a candidate for it.
 func cmdList(stdout io.Writer, store *model.Store, opts options, args []string, today hdate.Date) error {
 	args, all := takeFlag(args, "--all")
 	filter, rest := model.ParseArgs(args)
+	rest, day := splitTrailingDate(rest, today, 0)
 	if len(rest) > 0 {
-		return userErr("list takes only tag filters, got %q", rest[0])
+		return userErr("list takes only tag filters and a date, got %q", rest[0])
+	}
+	// Streaks and completion rates are counted backwards from the day shown, so
+	// a day that has not arrived has nothing to report.
+	if day.After(today) {
+		return userErr("cannot list %s: that day has not happened yet", day)
 	}
 
 	habits := store.Select(filter, all)
-	rows := render.BuildRows(habits, today, opts.sabbath)
+	rows := render.BuildRows(habits, day, opts.sabbath)
 	if opts.jsonOut {
 		return writeJSON(stdout, rows)
 	}
-	render.List(stdout, rows, opts.color)
+	render.List(stdout, rows, day, today, opts.color)
 	return nil
 }
 

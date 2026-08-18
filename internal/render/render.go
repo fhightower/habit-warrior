@@ -53,8 +53,13 @@ func pad(s string, n int, right bool) string {
 }
 
 // ListRow is one line of the list report, and its JSON shape.
+//
+// The report is about one day, which is today unless a report was asked for a
+// past one. Date names that day, and the fields whose names say today are
+// about it: on a report of an earlier day, done_today means done that day.
 type ListRow struct {
 	ID        int      `json:"id"`
+	Date      string   `json:"date"`
 	Name      string   `json:"name"`
 	Tags      []string `json:"tags"`
 	DoneToday bool     `json:"done_today"`
@@ -71,27 +76,33 @@ type ListRow struct {
 	RestToday bool `json:"rest_today"`
 }
 
-// BuildRows derives the list report from habits.
-func BuildRows(habits []*model.Habit, today hdate.Date, sab model.Sabbath) []ListRow {
+// BuildRows derives the list report from habits, as the given day stood.
+//
+// Every figure looks backwards from day and no further forward, so a past day
+// reports what was true then rather than a truncated view of now. At risk
+// keeps its meaning on a past day, since a day already gone can still be
+// backfilled: it says the streak survives only if that day gets done.
+func BuildRows(habits []*model.Habit, day hdate.Date, sab model.Sabbath) []ListRow {
 	rows := make([]ListRow, 0, len(habits))
 	for _, h := range habits {
-		streak, atRisk := h.CurrentStreak(today, sab)
+		streak, atRisk := h.CurrentStreak(day, sab)
 		tags := h.Tags
 		if tags == nil {
 			tags = []string{}
 		}
-		last30, last30of := h.CountLast(today, 30, sab)
+		last30, last30of := h.CountLast(day, 30, sab)
 		rows = append(rows, ListRow{
 			ID:        h.ID,
+			Date:      day.String(),
 			Name:      h.Name,
 			Tags:      tags,
-			DoneToday: h.IsDone(today),
+			DoneToday: h.IsDone(day),
 			Streak:    streak,
 			AtRisk:    atRisk,
 			Last30:    last30,
 			Last30Of:  last30of,
 			Archived:  h.Archived,
-			RestToday: h.Rests(today, sab),
+			RestToday: h.Rests(day, sab),
 		})
 	}
 	return rows
@@ -158,8 +169,9 @@ func (s Score) Percent() int {
 const scoreBar = 20
 
 // scoreLine renders the day's headline: a percentage, a bar, and the counts
-// behind them.
-func scoreLine(s Score, color bool) string {
+// behind them. when names the day the counts are about, "today" on a report of
+// today and "done" on one of an earlier day, whose date the title already gave.
+func scoreLine(s Score, when string, color bool) string {
 	if s.Rest {
 		note := "nothing due"
 		if s.Done > 0 {
@@ -187,7 +199,7 @@ func scoreLine(s Score, color bool) string {
 	return fmt.Sprintf(" %s  %s  %s",
 		paint(pad(fmt.Sprintf("%d%%", pct), 4, true), shade, color),
 		bar,
-		paint(fmt.Sprintf("%d of %d today", s.Done, s.Total), dim, color))
+		paint(fmt.Sprintf("%d of %d %s", s.Done, s.Total, when), dim, color))
 }
 
 // rank orders a row into one of three groups: what is still left to do today,
@@ -219,22 +231,31 @@ func order(rows []ListRow) []ListRow {
 	return sorted
 }
 
-// List writes the habit table.
-func List(w io.Writer, rows []ListRow, color bool) {
+// List writes the habit table for day, which is today unless an earlier day
+// was asked for. A past day is named in a title and drops the word today from
+// the report, since every figure in it is about that day rather than this one.
+func List(w io.Writer, rows []ListRow, day, today hdate.Date, color bool) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "No habits. Add one with: hw add <name>")
 		return
 	}
 
+	past := !day.Equal(today)
+	when, todayCol := "today", "Today"
+	if past {
+		when, todayCol = "done", "Done"
+		fmt.Fprintf(w, " %s\n", paint(fmt.Sprintf("%s %s", day.Weekday(), day), bold, color))
+	}
+
 	// A day where everything rests has no total to show, but is exactly the day
 	// the headline most needs to say so.
 	if score := BuildScore(rows); score.Total > 0 || score.Rest {
-		fmt.Fprintln(w, scoreLine(score, color))
+		fmt.Fprintln(w, scoreLine(score, when, color))
 	}
 
 	rows = order(rows)
 
-	headers := []string{"ID", "Habit", "Tags", "Today", "Streak", "Last 30"}
+	headers := []string{"ID", "Habit", "Tags", todayCol, "Streak", "Last 30"}
 	cells := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		name := r.Name
@@ -302,12 +323,18 @@ func List(w io.Writer, rows []ListRow, color bool) {
 	}
 
 	if color {
-		note := "  ! streak survives only if done today"
+		// A past day can still be backfilled, so its streak is at risk in the
+		// same sense today's is: it survives if that day gets done.
+		dayWord := "today"
+		if past {
+			dayWord = "that day"
+		}
+		note := "  ! streak survives only if done " + dayWord
 		// Any habit resting earns the legend: rest is now per habit, so the
 		// glyph can appear on one row while the rest of the table is ordinary.
 		for _, r := range rows {
 			if r.RestToday {
-				note += fmt.Sprintf("   %s resting today", RestGlyph)
+				note += fmt.Sprintf("   %s resting %s", RestGlyph, dayWord)
 				break
 			}
 		}

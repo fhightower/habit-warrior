@@ -40,7 +40,7 @@ func TestListSinksASkippedHabitBelowTheUnfinishedOnes(t *testing.T) {
 	done.ID = 3
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{off, pending, done}, today, model.Sabbath{}), false)
+	List(&buf, BuildRows([]*model.Habit{off, pending, done}, today, model.Sabbath{}), today, today, false)
 
 	got := strings.Join(habitOrder(buf.String()), ",")
 	if want := "meditate,read,stretch"; got != want {
@@ -54,7 +54,7 @@ func TestListDrawsSkippedHabitWithTheRestGlyph(t *testing.T) {
 	on.ID = 2
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{off, on}, today, model.Sabbath{}), false)
+	List(&buf, BuildRows([]*model.Habit{off, on}, today, model.Sabbath{}), today, today, false)
 	lines := tableLines(buf.String())
 	if len(lines) != 3 {
 		t.Fatalf("want a header and two rows, got:\n%s", buf.String())

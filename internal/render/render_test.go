@@ -27,7 +27,7 @@ func TestListMarksTodayAndStreak(t *testing.T) {
 	pending.ID = 2
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{done, pending}, today, model.Sabbath{}), false)
+	List(&buf, BuildRows([]*model.Habit{done, pending}, today, model.Sabbath{}), today, today, false)
 	out := buf.String()
 
 	lines := tableLines(out)
@@ -50,7 +50,7 @@ func TestListMarksTodayAndStreak(t *testing.T) {
 func TestListColumnsLineUpWithWideGlyphs(t *testing.T) {
 	var buf bytes.Buffer
 	rows := BuildRows([]*model.Habit{habit("a", 0), habit("bbbbbbb")}, today, model.Sabbath{})
-	List(&buf, rows, false)
+	List(&buf, rows, today, today, false)
 
 	lines := tableLines(buf.String())
 	if len(lines) != 3 {
@@ -106,7 +106,7 @@ func indexRune(s string, r rune) int {
 
 func TestListEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	List(&buf, nil, false)
+	List(&buf, nil, today, today, false)
 	if !strings.Contains(buf.String(), "hw add") {
 		t.Errorf("empty list should point at hw add, got %q", buf.String())
 	}
@@ -154,7 +154,7 @@ func TestListShowsTheDailyScore(t *testing.T) {
 	rows := BuildRows([]*model.Habit{
 		habit("a", 0), habit("b", 0), habit("c"), habit("d"), habit("e"),
 	}, today, model.Sabbath{})
-	List(&buf, rows, false)
+	List(&buf, rows, today, today, false)
 
 	first := strings.SplitN(buf.String(), "\n", 2)[0]
 	if !strings.Contains(first, "40%") {
@@ -170,7 +170,7 @@ func TestListLast30CarriesItsPercentage(t *testing.T) {
 	// Thirteen of the last 26 eligible days. The Sundays sit at offsets 4, 11,
 	// 18 and 25, and none are used, so the denominator stays 26.
 	h := habit("meditate", 1, 2, 3, 5, 6, 8, 10, 12, 14, 15, 16, 17, 19)
-	List(&buf, BuildRows([]*model.Habit{h}, today, sundaySabbath), false)
+	List(&buf, BuildRows([]*model.Habit{h}, today, sundaySabbath), today, today, false)
 
 	row := tableLines(buf.String())[1]
 	if !strings.Contains(row, "13/26 (50%)") {
@@ -181,7 +181,7 @@ func TestListLast30CarriesItsPercentage(t *testing.T) {
 func TestListLast30PercentageMatchesTheScoreRounding(t *testing.T) {
 	var buf bytes.Buffer
 	// Nothing at all in the window: no percentage should imply otherwise.
-	List(&buf, BuildRows([]*model.Habit{habit("meditate")}, today, model.Sabbath{}), false)
+	List(&buf, BuildRows([]*model.Habit{habit("meditate")}, today, model.Sabbath{}), today, today, false)
 	if row := tableLines(buf.String())[1]; !strings.Contains(row, "0/30 (0%)") {
 		t.Errorf("row = %q, want 0/30 (0%%)", row)
 	}
@@ -189,7 +189,7 @@ func TestListLast30PercentageMatchesTheScoreRounding(t *testing.T) {
 
 func TestListScoreIsAbsentWithoutHabits(t *testing.T) {
 	var buf bytes.Buffer
-	List(&buf, nil, false)
+	List(&buf, nil, today, today, false)
 	if strings.Contains(buf.String(), "%") {
 		t.Errorf("empty list should show no score:\n%s", buf.String())
 	}
@@ -200,7 +200,7 @@ func TestListScoreOnARestDay(t *testing.T) {
 	idle := &model.Habit{ID: 1, Name: "a", Created: restDay.Add(-30).String(), Done: []string{}}
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{idle}, restDay, sundaySabbath), false)
+	List(&buf, BuildRows([]*model.Habit{idle}, restDay, sundaySabbath), restDay, restDay, false)
 	out := buf.String()
 	if !strings.Contains(out, "Rest day") {
 		t.Errorf("rest day list does not say so:\n%s", out)
@@ -219,7 +219,7 @@ func TestListScoreCountsBonusWorkOnARestDay(t *testing.T) {
 	worked.MarkDone(restDay)
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{worked}, restDay, sundaySabbath), false)
+	List(&buf, BuildRows([]*model.Habit{worked}, restDay, sundaySabbath), restDay, restDay, false)
 	out := buf.String()
 	if !strings.Contains(out, "Rest day") || !strings.Contains(out, "1") {
 		t.Errorf("rest day list does not report the bonus:\n%s", out)
@@ -239,7 +239,7 @@ func TestListShowsRestInsteadOfAMiss(t *testing.T) {
 	if !rows[0].RestToday {
 		t.Fatal("RestToday = false on the rest day")
 	}
-	List(&buf, rows, false)
+	List(&buf, rows, restDay, restDay, false)
 
 	out := buf.String()
 	if !strings.Contains(out, RestGlyph) {
@@ -260,7 +260,7 @@ func TestListLast30DropsRestDaysFromTheDenominator(t *testing.T) {
 
 	var buf bytes.Buffer
 	rows := BuildRows([]*model.Habit{h}, today, sundaySabbath)
-	List(&buf, rows, false)
+	List(&buf, rows, today, today, false)
 	if !strings.Contains(buf.String(), "30/30") {
 		t.Errorf("a perfect month should read 30/30 when rest days were done anyway:\n%s", buf.String())
 	}
@@ -268,7 +268,7 @@ func TestListLast30DropsRestDaysFromTheDenominator(t *testing.T) {
 	// Nothing done: the four Sundays in the window leave 26 eligible days.
 	empty := habit("skip")
 	var buf2 bytes.Buffer
-	List(&buf2, BuildRows([]*model.Habit{empty}, today, sundaySabbath), false)
+	List(&buf2, BuildRows([]*model.Habit{empty}, today, sundaySabbath), today, today, false)
 	if !strings.Contains(buf2.String(), "0/26") {
 		t.Errorf("want 0/26 with four rest days excluded:\n%s", buf2.String())
 	}
@@ -281,7 +281,7 @@ func TestListColumnsLineUpWithTheRestGlyph(t *testing.T) {
 	resting := &model.Habit{ID: 2, Name: "b", Created: restDay.Add(-30).String(), Done: []string{}}
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), false)
+	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), restDay, restDay, false)
 
 	lines := tableLines(buf.String())
 	if len(lines) < 3 {
@@ -318,7 +318,7 @@ func TestListPutsUnresolvedHabitsFirst(t *testing.T) {
 	stillPending.ID = 4
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{done, pending, alsoDone, stillPending}, today, model.Sabbath{}), false)
+	List(&buf, BuildRows([]*model.Habit{done, pending, alsoDone, stillPending}, today, model.Sabbath{}), today, today, false)
 
 	got := strings.Join(habitOrder(buf.String()), ",")
 	if want := "read,walk,meditate,stretch"; got != want {
@@ -336,7 +336,7 @@ func TestListPutsArchivedHabitsLast(t *testing.T) {
 	done.ID = 3
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{archived, pending, done}, today, model.Sabbath{}), false)
+	List(&buf, BuildRows([]*model.Habit{archived, pending, done}, today, model.Sabbath{}), today, today, false)
 
 	got := strings.Join(habitOrder(buf.String()), ",")
 	if want := "read,meditate,old"; got != want {
@@ -351,7 +351,7 @@ func TestListKeepsIDOrderOnARestDay(t *testing.T) {
 	resting := &model.Habit{ID: 2, Name: "b", Created: restDay.Add(-30).String(), Done: []string{}}
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), false)
+	List(&buf, BuildRows([]*model.Habit{done, resting}, restDay, sundaySabbath), restDay, restDay, false)
 
 	got := strings.Join(habitOrder(buf.String()), ",")
 	if want := "a,b"; got != want {
@@ -366,7 +366,7 @@ func TestListDoesNotReorderTheCallersRows(t *testing.T) {
 	rows := BuildRows([]*model.Habit{done, pending}, today, model.Sabbath{})
 
 	var buf bytes.Buffer
-	List(&buf, rows, false)
+	List(&buf, rows, today, today, false)
 
 	if rows[0].Name != "meditate" || rows[1].Name != "read" {
 		t.Errorf("List reordered the caller's slice: %q then %q", rows[0].Name, rows[1].Name)
