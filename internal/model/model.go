@@ -140,6 +140,29 @@ func (h *Habit) CreatedDate() hdate.Date {
 	return hdate.Today()
 }
 
+// Since is the first day the habit counts: the day it was added, or the oldest
+// completion when older days were backfilled, so that a completion is never
+// counted against a day the habit did not exist.
+func (h *Habit) Since() hdate.Date {
+	since := h.CreatedDate()
+	if len(h.Done) > 0 {
+		if first, err := hdate.ParseISO(h.Done[0]); err == nil && first.Before(since) {
+			since = first
+		}
+	}
+	return since
+}
+
+// Due reports whether d counts toward the habit: it had started by then, and
+// the day was not a rest day left undone. A rest day that was done anyway is
+// due, which keeps done from ever exceeding due.
+func (h *Habit) Due(d hdate.Date, sab Sabbath) bool {
+	if d.Before(h.Since()) {
+		return false
+	}
+	return !h.Rests(d, sab) || h.IsDone(d)
+}
+
 // IsDone reports whether the habit was completed on d.
 func (h *Habit) IsDone(d hdate.Date) bool { return containsDate(h.Done, d.String()) }
 
@@ -319,12 +342,7 @@ func (h *Habit) Stats(today hdate.Date, sab Sabbath) Stats {
 	cur, atRisk := h.CurrentStreak(today, sab)
 	// Backfilling a day older than the habit itself extends the window, so the
 	// completion rate can never exceed 100%.
-	since := h.CreatedDate()
-	if len(h.Done) > 0 {
-		if first, err := hdate.ParseISO(h.Done[0]); err == nil && first.Before(since) {
-			since = first
-		}
-	}
+	since := h.Since()
 	tracked := h.eligibleDays(since, today, sab)
 	if tracked < 1 {
 		tracked = 1

@@ -101,6 +101,14 @@ can be: `hw done <habit> <date>` backfills. In `--json` every row carries a
 `date` field naming the day it describes, and the fields that say today —
 `done_today`, `rest_today` — are about that day.
 
+### Calendar
+
+`hw cal` draws a heatmap, one column per week, each day shaded by how many of
+the habits due that day were done. A habit counts from the day it was added, or
+from the oldest day backfilled if that is earlier, so the days before it existed
+are not misses. Days before any of the shown habits started are left blank, like
+the days still to come. In `--json`, `since` names the first tracked day.
+
 ### Selecting habits
 
 Anything that names one habit works, tried in this order: ID, exact name,

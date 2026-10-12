@@ -347,31 +347,40 @@ func List(w io.Writer, rows []ListRow, day, today hdate.Date, color bool) {
 type CalDay struct {
 	Date  string `json:"date"`
 	Count int    `json:"count"`
-	// Of is how many of the habits were due that day: the ones that were not
-	// resting, plus any that rested and were done anyway. It is the denominator
-	// behind Count, and is smaller than the habit total on a day some of them
-	// had off.
+	// Of is how many of the habits were due that day: the ones that had started
+	// and were not resting, plus any that rested and were done anyway. It is
+	// the denominator behind Count, and is smaller than the habit total on a day
+	// some of them had off or had not been added yet.
 	Of int `json:"of"`
-	// Rest marks a day no habit was due, so a consumer can tell an intentional
-	// gap from a missed day.
+	// Rest marks a day no habit was due once tracking had begun, so a consumer
+	// can tell an intentional gap from a missed day. Days before the calendar's
+	// Since are not rest: nothing was being tracked.
 	Rest bool `json:"rest,omitempty"`
 }
 
 // Calendar is the heatmap data: every day from Start (a Sunday) through End
 // (today), plus the number of habits it covers.
 type Calendar struct {
-	Start  string   `json:"start"`
-	End    string   `json:"end"`
+	Start string `json:"start"`
+	End   string `json:"end"`
+	// Since is the first day any of the habits counts. Days before it were not
+	// being tracked: nothing was due on them, and nothing rested either.
+	Since  string   `json:"since"`
 	Habits int      `json:"habits"`
 	Days   []CalDay `json:"days"`
 
 	start hdate.Date
 	end   hdate.Date
+	since hdate.Date
 }
 
 // BuildCal collects completions for the last weeks weeks, ending today. The
 // range starts on the Sunday that begins the earliest week shown, so the grid
 // has whole columns.
+//
+// Each habit counts from the day it started, so a day before it was added is
+// neither a miss nor a rest. A day before every habit started is not rest
+// either: nothing was being tracked yet.
 func BuildCal(habits []*model.Habit, today hdate.Date, weeks int, sab model.Sabbath) Calendar {
 	if weeks < 1 {
 		weeks = 1
@@ -380,26 +389,35 @@ func BuildCal(habits []*model.Habit, today hdate.Date, weeks int, sab model.Sabb
 	sundayThisWeek := today.Add(-int(today.Weekday()))
 	start := sundayThisWeek.Add(-7 * (weeks - 1))
 
+	since := today
+	for _, h := range habits {
+		if s := h.Since(); s.Before(since) {
+			since = s
+		}
+	}
+
 	cal := Calendar{
 		Start:  start.String(),
 		End:    today.String(),
+		Since:  since.String(),
 		Habits: len(habits),
 		Days:   []CalDay{},
 		start:  start,
 		end:    today,
+		since:  since,
 	}
 	for d := start; !d.After(today); d = d.Add(1) {
 		n, of := 0, 0
 		for _, h := range habits {
-			done := h.IsDone(d)
-			if done {
+			if h.IsDone(d) {
 				n++
 			}
-			if !h.Rests(d, sab) || done {
+			if h.Due(d, sab) {
 				of++
 			}
 		}
-		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n, Of: of, Rest: of == 0})
+		rest := of == 0 && !d.Before(since)
+		cal.Days = append(cal.Days, CalDay{Date: d.String(), Count: n, Of: of, Rest: rest})
 	}
 	return cal
 }
@@ -435,6 +453,13 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 	if end.IsZero() {
 		if d, err := hdate.ParseISO(cal.End); err == nil {
 			end = d
+		}
+	}
+	since := cal.since
+	if since.IsZero() {
+		since = start
+		if d, err := hdate.ParseISO(cal.Since); err == nil {
+			since = d
 		}
 	}
 
@@ -492,7 +517,9 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 		line.WriteString(paint(pad(weekdayNames[row], labelWidth, false), dim, color))
 		for c := 0; c < cols; c++ {
 			d := start.Add(c*7 + row)
-			if d.After(end) || d.Before(start) {
+			// Days before tracking began are as blank as days still to come:
+			// nothing could have been done on either.
+			if d.After(end) || d.Before(start) || d.Before(since) {
 				line.WriteString("  ")
 				continue
 			}
