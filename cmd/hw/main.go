@@ -28,7 +28,7 @@ Usage:
   hw skip <habit...|+tag> [days]   Take days off, no penalty
   hw unskip <habit...|+tag> [days] Put days back on
   hw list [+tag] [-tag] [date]     Table of habits, streaks, last 30 days
-  hw cal [habit] [+tag] [--weeks N]  Heatmap (default: 26 weeks)
+  hw cal [habit] [+tag] [--weeks N]  Heatmap and weekly scores (default: 26 weeks)
   hw stats [habit] [+tag]          Streaks and completion rates
   hw rename <habit> <new name>     Rename
   hw tag <habit> +add -remove      Change tags
@@ -57,6 +57,10 @@ is refused. --all adds archived habits.
   hw list yesterday
   hw list +health mon
   hw list 2026-08-01
+
+A bare hw or hw list also shows the weekly score: the share of habit-days due
+this week, last week, and in your best finished week that got done. hw cal
+scores each week it draws, under its column.
 
 --note attaches a note to the completions a done command records:
 
@@ -624,7 +628,12 @@ func refuseDoneDays(targets []*model.Habit, start, end hdate.Date) error {
 // cmdList shows the habit table for one day, which is today unless a trailing
 // date names an earlier one. Since list takes no habit selectors, nothing has
 // to survive in front of the date and every argument is a candidate for it.
+//
+// A bare list also shows the weekly score. Any argument narrows the table to
+// something other than every habit as of today, which is what that score
+// describes, so it is left off rather than shown beside rows it does not match.
 func cmdList(stdout io.Writer, store *model.Store, opts options, args []string, today hdate.Date) error {
+	bare := len(args) == 0
 	args, all := takeFlag(args, "--all")
 	filter, rest := model.ParseArgs(args)
 	rest, day := splitTrailingDate(rest, today, 0)
@@ -642,7 +651,12 @@ func cmdList(stdout io.Writer, store *model.Store, opts options, args []string, 
 	if opts.jsonOut {
 		return writeJSON(stdout, rows)
 	}
-	render.List(stdout, rows, day, today, opts.color)
+	var weekly *render.Weekly
+	if bare {
+		wk := render.BuildWeekly(habits, today, opts.sabbath)
+		weekly = &wk
+	}
+	render.List(stdout, rows, day, today, weekly, opts.color)
 	return nil
 }
 

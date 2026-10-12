@@ -189,17 +189,21 @@ func scoreLine(s Score, when string, color bool) string {
 	bar := paint(strings.Repeat(Glyphs[4], filled), levelColors[4], color) +
 		paint(strings.Repeat(Glyphs[1], scoreBar-filled), levelColors[0], color)
 
-	shade := levelColors[4]
-	switch {
-	case pct == 0:
-		shade = dim
-	case pct < 100:
-		shade = yellow
-	}
 	return fmt.Sprintf(" %s  %s  %s",
-		paint(pad(fmt.Sprintf("%d%%", pct), 4, true), shade, color),
+		paint(pad(fmt.Sprintf("%d%%", pct), 4, true), shade(pct), color),
 		bar,
 		paint(fmt.Sprintf("%d of %d %s", s.Done, s.Total, when), dim, color))
+}
+
+// shade colors a percentage: green when complete, yellow partway, dim at none.
+func shade(pct int) string {
+	switch {
+	case pct == 0:
+		return dim
+	case pct < 100:
+		return yellow
+	}
+	return levelColors[4]
 }
 
 // rank orders a row into one of three groups: what is still left to do today,
@@ -234,7 +238,8 @@ func order(rows []ListRow) []ListRow {
 // List writes the habit table for day, which is today unless an earlier day
 // was asked for. A past day is named in a title and drops the word today from
 // the report, since every figure in it is about that day rather than this one.
-func List(w io.Writer, rows []ListRow, day, today hdate.Date, color bool) {
+// A weekly score, when given, follows the day's headline; nil leaves it out.
+func List(w io.Writer, rows []ListRow, day, today hdate.Date, weekly *Weekly, color bool) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "No habits. Add one with: hw add <name>")
 		return
@@ -251,6 +256,9 @@ func List(w io.Writer, rows []ListRow, day, today hdate.Date, color bool) {
 	// the headline most needs to say so.
 	if score := BuildScore(rows); score.Total > 0 || score.Rest {
 		fmt.Fprintln(w, scoreLine(score, when, color))
+	}
+	if weekly != nil {
+		fmt.Fprintln(w, " "+weeklyLine(*weekly, color))
 	}
 
 	rows = order(rows)
@@ -359,7 +367,7 @@ type CalDay struct {
 }
 
 // Calendar is the heatmap data: every day from Start (a Sunday) through End
-// (today), plus the number of habits it covers.
+// (today), plus the number of habits it covers and how each week scored.
 type Calendar struct {
 	Start string `json:"start"`
 	End   string `json:"end"`
@@ -368,6 +376,12 @@ type Calendar struct {
 	Since  string   `json:"since"`
 	Habits int      `json:"habits"`
 	Days   []CalDay `json:"days"`
+	// Weeks scores each week shown, one per column, oldest first.
+	Weeks []WeekScore `json:"weeks"`
+	// Weekly is the summary under the grid. It looks at the habits' whole
+	// history rather than only the weeks shown, so its best week can be one
+	// the grid has scrolled past.
+	Weekly
 
 	start hdate.Date
 	end   hdate.Date
@@ -386,15 +400,8 @@ func BuildCal(habits []*model.Habit, today hdate.Date, weeks int, sab model.Sabb
 		weeks = 1
 	}
 	// Walk back to the Sunday of the current week, then back weeks-1 more.
-	sundayThisWeek := today.Add(-int(today.Weekday()))
-	start := sundayThisWeek.Add(-7 * (weeks - 1))
-
-	since := today
-	for _, h := range habits {
-		if s := h.Since(); s.Before(since) {
-			since = s
-		}
-	}
+	start := sundayOf(today).Add(-7 * (weeks - 1))
+	since := firstStart(habits, today)
 
 	cal := Calendar{
 		Start:  start.String(),
@@ -402,9 +409,14 @@ func BuildCal(habits []*model.Habit, today hdate.Date, weeks int, sab model.Sabb
 		Since:  since.String(),
 		Habits: len(habits),
 		Days:   []CalDay{},
+		Weeks:  []WeekScore{},
+		Weekly: BuildWeekly(habits, today, sab),
 		start:  start,
 		end:    today,
 		since:  since,
+	}
+	for s := start; !s.After(today); s = s.Add(7) {
+		cal.Weeks = append(cal.Weeks, scoreWeek(habits, s, today, sab))
 	}
 	for d := start; !d.After(today); d = d.Add(1) {
 		n, of := 0, 0
@@ -483,6 +495,30 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 	cols := end.Since(start)/7 + 1
 	const labelWidth = 4
 
+	// Each week's score prints under its column: blank for a week that ended
+	// before tracking began, a dash for one where nothing was due.
+	scores := make([]string, cols)
+	for c := 0; c < cols && c < len(cal.Weeks); c++ {
+		wk := cal.Weeks[c]
+		switch {
+		case start.Add(c*7 + 6).Before(since):
+			// Left blank, like the column above it.
+		case wk.Of == 0:
+			scores[c] = RestGlyph
+		default:
+			scores[c] = fmt.Sprintf("%d", wk.Percent())
+		}
+	}
+	// Every column is as wide as the widest score plus a space, so neighbours
+	// never run together; a glyph sits over its score's last digit.
+	cellW := 2
+	for _, s := range scores {
+		if width(s)+1 > cellW {
+			cellW = width(s) + 1
+		}
+	}
+	lead := strings.Repeat(" ", cellW-2)
+
 	// Month labels sit above the first column of each new month.
 	months := make([]string, cols)
 	prev := ""
@@ -495,14 +531,14 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 		}
 	}
 	// Each label sits above the column its month starts in. A label is dropped
-	// only when the previous one has not finished printing, which happens when
-	// two months start within a column of each other.
+	// only when it would not leave a space after the previous one, which
+	// happens when two months start within a column of each other.
 	var head strings.Builder
 	head.WriteString(strings.Repeat(" ", labelWidth))
 	pos := 0
 	for c := 0; c < cols; c++ {
-		want := c * 2 // two characters per week column
-		if months[c] == "" || pos > want {
+		want := c*cellW + len(lead) // over the column's glyph
+		if months[c] == "" || (pos > 0 && pos >= want) {
 			continue
 		}
 		head.WriteString(strings.Repeat(" ", want-pos))
@@ -520,10 +556,11 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 			// Days before tracking began are as blank as days still to come:
 			// nothing could have been done on either.
 			if d.After(end) || d.Before(start) || d.Before(since) {
-				line.WriteString("  ")
+				line.WriteString(strings.Repeat(" ", cellW))
 				continue
 			}
 			key := d.String()
+			line.WriteString(lead)
 			// A rest day nobody worked shows as rest; one that was done anyway
 			// keeps its density, since the work really happened.
 			if rest[key] && counts[key] == 0 {
@@ -540,6 +577,21 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 		fmt.Fprintln(w, strings.TrimRight(line.String(), " "))
 	}
 
+	var weekRow strings.Builder
+	weekRow.WriteString(paint(pad("%", labelWidth, false), dim, color))
+	for c, s := range scores {
+		weekRow.WriteString(strings.Repeat(" ", cellW-1-width(s)))
+		switch s {
+		case "":
+		case RestGlyph:
+			weekRow.WriteString(paint(s, dim, color))
+		default:
+			weekRow.WriteString(paint(s, shade(cal.Weeks[c].Percent()), color))
+		}
+		weekRow.WriteString(" ")
+	}
+	fmt.Fprintln(w, strings.TrimRight(weekRow.String(), " "))
+
 	var legend strings.Builder
 	legend.WriteString("Less ")
 	for i, g := range Glyphs {
@@ -553,6 +605,9 @@ func Cal(w io.Writer, cal Calendar, title string, color bool) {
 		legend.WriteString(" rest")
 	}
 	fmt.Fprintln(w, paint(legend.String(), dim, color))
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, weeklyLine(cal.Weekly, color))
 }
 
 // Stats writes the per-habit summary.

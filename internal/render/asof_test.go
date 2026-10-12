@@ -16,7 +16,7 @@ func TestListOfAPastDayNamesItEverywhere(t *testing.T) {
 	h := habit("meditate", 2) // done the day before, leaving yesterday at risk
 
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{h}, yesterday, model.Sabbath{}), yesterday, today, true)
+	List(&buf, BuildRows([]*model.Habit{h}, yesterday, model.Sabbath{}), yesterday, today, nil, true)
 	out := buf.String()
 
 	if !strings.Contains(out, yesterday.String()) {
@@ -36,7 +36,7 @@ func TestListOfAPastDayNamesItEverywhere(t *testing.T) {
 // A report of today is unchanged: no title, and the day is called today.
 func TestListOfTodayKeepsItsWording(t *testing.T) {
 	var buf bytes.Buffer
-	List(&buf, BuildRows([]*model.Habit{habit("meditate", 1)}, today, model.Sabbath{}), today, today, true)
+	List(&buf, BuildRows([]*model.Habit{habit("meditate", 1)}, today, model.Sabbath{}), today, today, nil, true)
 	out := buf.String()
 
 	if strings.Contains(out, today.String()) {

@@ -51,6 +51,7 @@ hw stats workout
 
 ```
   50%  ██████████░░░░░░░░░░  1 of 2 today
+ This week 70%   Last week 71%   Best 79% (week of 2026-07-19)
  ID  Habit        Tags            Today  Streak      Last 30
   2  read a book  mind            ·           0   10/26 (38%)
   1  workout      health,morning  ✓          12  26/26 (100%)
@@ -61,6 +62,16 @@ percentage and as raw counts. Archived habits are left out, as is any habit
 resting today, which is not due and so cannot be behind. When nothing at all is
 due it reads `Rest day` instead, since 0% would be a strange way to describe a
 day off.
+
+Under it is the weekly score: of the habit-days due in a week, Sunday through
+Saturday, the share that got done. This week counts through today, last week is
+the whole of the week before, and the best is the highest-scoring finished week
+in your history, the most recent on a tie. The week in progress cannot be the
+best until it is over, since one good Monday would otherwise claim it. Rest
+days left undone are not due, and neither is any day before a habit was added.
+A week with nothing due reads `–`. The weekly score only appears on a bare `hw`
+or `hw list`; tag filters, a date or `--all` leave it off, since it describes
+every habit as of today.
 
 What is still left to do comes first, then everything settled — done, or
 resting today — then anything archived; within each group the habits stay in ID
@@ -108,6 +119,25 @@ the habits due that day were done. A habit counts from the day it was added, or
 from the oldest day backfilled if that is earlier, so the days before it existed
 are not misses. Days before any of the shown habits started are left blank, like
 the days still to come. In `--json`, `since` names the first tracked day.
+
+Under the grid, the `%` row gives each week's score below its column, and a
+summary line gives the same this week, last week and best as `hw list`, over the
+habits the calendar shows. The summary looks at all of their history, so its
+best week can be one the grid has scrolled past. Columns are as wide as the
+widest score needs, so a perfect `100` week widens the grid by a column of
+spaces.
+
+```
+Sat   ▓  █  ▒  ▓  █
+%    71 86 52 79 93 60
+Less · ░ ▒ ▓ █ More   – rest
+
+This week 60%   Last week 93%   Best 93% (week of 2026-07-26)
+```
+
+`--json` carries `weeks`, one score per column, alongside `this_week`,
+`last_week` and `best`, each a `start` Sunday with `done` out of `of`. `best` is
+`null` until a week has finished.
 
 ### Selecting habits
 
@@ -239,8 +269,8 @@ whole group at once.
 | `hw undo <habit...\|+tag> [date]` | Unmark |
 | `hw skip <habit...\|+tag> [date\|from..to]` | Take days off, no penalty |
 | `hw unskip <habit...\|+tag> [date\|from..to]` | Put days back on |
-| `hw list [+tag] [-tag] [date] [--all]` | Daily score, then habits (unfinished first), streaks, last 30 days |
-| `hw cal [habit] [+tag] [--weeks N]` | Heatmap, 26 weeks by default |
+| `hw list [+tag] [-tag] [date] [--all]` | Daily score (and weekly, when bare), then habits (unfinished first), streaks, last 30 days |
+| `hw cal [habit] [+tag] [--weeks N]` | Heatmap with weekly scores, 26 weeks by default |
 | `hw stats [habit] [+tag]` | Streaks, rates, best weekday |
 | `hw rename <habit> <new name>` | Rename |
 | `hw tag <habit> +add -remove` | Change tags |
